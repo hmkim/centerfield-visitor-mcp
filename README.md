@@ -78,6 +78,7 @@ Add the server to your MCP client config (example: Kiro CLI `mcp.json`):
 | `CF_PERSON_IN_CHARGE_MOBILE` | Mobile number of the approval contact registered in Centerfield | _(empty)_ | ✅ |
 | `CF_BUILDING` | Building code | `east` | |
 | `CF_BUILDING_KEY` | Building display key | `East` | |
+| `CF_DEFAULT_FLOOR` | Floor used when a tool call / file row omits `floor` (`12` or `18`) | `12` | |
 | `CF_CENTERFIELD_BASE_URL` | Centerfield base URL | `https://www.centerfield.co.kr` | |
 | `CF_REQUEST_TIMEOUT` | HTTP timeout (seconds) | `30` | |
 | `CF_BULK_MAX_VISITORS` | Max visitors per bulk request | `200` | |
@@ -110,7 +111,7 @@ Values are validated before any request is sent:
 | Field | Rule |
 |-------|------|
 | `visit_time` | `HH:MM`, 30-minute intervals, between `08:00` and `20:00` |
-| `floor` | `12` or `18` only |
+| `floor` | `12` or `18` only; if omitted, defaults to `CF_DEFAULT_FLOOR` (which itself defaults to `12`) |
 | `visit_purpose` | `meeting` (default), `visit_business`, `interview`, `tour`, `construction`, `others` |
 | `visitor_mobile` | hyphens/spaces are stripped automatically (`010-1234-5678` → `01012345678`) |
 | `visitor_email` | must be a valid email address |

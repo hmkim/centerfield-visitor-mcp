@@ -14,6 +14,7 @@ from pathlib import Path
 
 from mcp.server import FastMCP
 
+from .config import settings
 from .models import VisitorIn
 from .service import register_bulk, register_single
 
@@ -114,7 +115,7 @@ def _build_visitors(records: list[dict]) -> tuple[list[VisitorIn], list[str]]:
     for i, rec in enumerate(records):
         try:
             rec.setdefault("visit_purpose", "meeting")
-            rec.setdefault("floor", "12")
+            rec.setdefault("floor", settings.default_floor)
             visitors.append(VisitorIn(**rec))
         except Exception as e:
             errors.append(f"  행 {i + 2}: {e}")
@@ -134,7 +135,7 @@ async def register_visitor(
     visit_date: str,
     visit_time: str,
     visit_purpose: str = "meeting",
-    floor: str = "12",
+    floor: str = "",
 ) -> str:
     """Register a single visitor to Centerfield building.
 
@@ -146,7 +147,7 @@ async def register_visitor(
         visit_date: 방문 날짜 (YYYY-MM-DD 형식)
         visit_time: 방문 시간 (HH:MM, 30분 단위, 08:00~20:00)
         visit_purpose: 방문 목적 (meeting, visit_business, interview, tour, construction, others)
-        floor: 방문 층수 (12 또는 18)
+        floor: 방문 층수 (12 또는 18). 생략 시 CF_DEFAULT_FLOOR 값을 사용합니다.
     """
     try:
         visitor = VisitorIn(
@@ -157,7 +158,7 @@ async def register_visitor(
             visit_date=visit_date,
             visit_time=visit_time,
             visit_purpose=visit_purpose,
-            floor=floor,
+            floor=floor or settings.default_floor,
         )
     except Exception as e:
         return f"입력값 오류: {e}"

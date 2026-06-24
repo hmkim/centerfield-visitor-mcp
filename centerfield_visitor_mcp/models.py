@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, EmailStr, field_validator
 
+from .config import settings
+
 
 VALID_PURPOSES = Literal[
     "visit_business", "meeting", "interview", "tour", "construction", "others"
@@ -19,7 +21,7 @@ class VisitorIn(BaseModel):
     visit_date: date
     visit_time: str
     visit_purpose: VALID_PURPOSES = "meeting"
-    floor: Literal["12", "18"] = "12"
+    floor: Literal["12", "18"] = settings.default_floor
 
     @field_validator("visitor_mobile")
     @classmethod
