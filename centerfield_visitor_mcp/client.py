@@ -84,14 +84,14 @@ class CenterfieldClient:
         a_tag = soup.find("a", {"data-compid": True})
         if a_tag:
             company_id = a_tag.get("data-compid")
-            logger.info(f"Found company_id: {company_id}")
+            logger.info("Found company_id: %s", company_id)
             return company_id
 
         li = soup.find("li")
         if li:
             company_id = li.get("data-id") or li.get("data-compid")
             if company_id:
-                logger.info(f"Found company_id from li: {company_id}")
+                logger.info("Found company_id from li: %s", company_id)
                 return company_id
 
         for tag in soup.find_all(["a", "li"]):
@@ -99,7 +99,7 @@ class CenterfieldClient:
             match = re.search(r"(\d+)", onclick)
             if match:
                 company_id = match.group(1)
-                logger.info(f"Found company_id from onclick: {company_id}")
+                logger.info("Found company_id from onclick: %s", company_id)
                 return company_id
 
         raise CompanyNotFoundError(
@@ -195,30 +195,31 @@ class CenterfieldClient:
 
         return result
 
-    async def full_workflow_single(
-        self,
-        visitor_name: str,
-        visitor_company_name: str,
-        visitor_mobile: str,
-        visitor_email: str,
-        visit_date: str,
-        visit_time: str,
-        visit_purpose: str,
-        floor: str,
-    ) -> dict:
+    # ── Composite flows ─────────────────────────────────────────────────
+
+    async def prepare(self) -> dict:
+        """Read-only part of the flow: session, company, approval contact, floors.
+
+        Returns {"company_id", "pic": {"name","id"}, "floors": {key: label}}.
+        Nothing is submitted, so this is safe for configuration checks and dry runs.
+        """
         await self.initialize_session()
         company_id = await self.search_company(settings.company_name)
-        pic = await self.verify_person_in_charge(
-            settings.person_in_charge_mobile, company_id
-        )
-        floor_map = await self.get_floor_list(settings.building, company_id)
-        floor_key = self._resolve_floor_key(floor, floor_map)
+        pic = await self.verify_person_in_charge(settings.person_in_charge_mobile, company_id)
+        floors = await self.get_floor_list(settings.building, company_id)
+        if not floors:
+            raise FloorListError("Floor list is empty for this company/building")
+        return {"company_id": company_id, "pic": pic, "floors": floors}
 
-        payload = {
+    def build_payload(self, context: dict, *, visitor_name: str, visitor_company_name: str,
+                      visitor_mobile: str, visitor_email: str, visit_date: str,
+                      visit_time: str, visit_purpose: str, floor: str) -> dict:
+        floor_key = self._resolve_floor_key(floor, context["floors"])
+        return {
             "company_name": settings.company_name,
-            "company_id": company_id,
-            "person_in_charge": pic["name"],
-            "person_in_charge_id": pic["id"],
+            "company_id": context["company_id"],
+            "person_in_charge": context["pic"]["name"],
+            "person_in_charge_id": context["pic"]["id"],
             "person_in_charge_mobile": settings.person_in_charge_mobile,
             "building": settings.building,
             "building_key": settings.building_key,
@@ -235,10 +236,28 @@ class CenterfieldClient:
             "privacy_policy_2": "on",
         }
 
+    async def full_workflow_single(self, **visitor_fields) -> dict:
+        context = await self.prepare()
+        payload = self.build_payload(context, **visitor_fields)
         return await self.submit_reservation(payload)
 
-    def _resolve_floor_key(self, floor: str, floor_map: dict[str, str]) -> str:
+    @staticmethod
+    def _resolve_floor_key(floor: str, floor_map: dict[str, str]) -> str:
+        """Map a floor number ("12"/"18") to the site's floor key.
+
+        Matches a key whose trailing digits equal the floor (e.g. ``lower_floor12``),
+        falling back to a label match (e.g. ``12층``). Raises FloorListError instead of
+        guessing a key the site may not accept.
+        """
+        wanted = floor.strip()
         for key in floor_map:
-            if floor in key:
+            digits = re.search(r"(\d+)\s*$", key)
+            if digits and digits.group(1) == wanted:
                 return key
-        return f"lower_floor{floor}"
+        for key, label in floor_map.items():
+            digits = re.search(r"(\d+)", label or "")
+            if digits and digits.group(1) == wanted:
+                return key
+        raise FloorListError(
+            f"Floor {wanted} not offered for this company (available: {', '.join(floor_map) or 'none'})"
+        )
