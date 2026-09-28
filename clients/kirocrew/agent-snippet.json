@@ -1,0 +1,16 @@
+{
+  "_comment": "Merge into the Kiro CLI custom agent JSON used by KiroCrew (~/.kiro/agents/<agent>.json). Skill: copy SKILL.md to ~/.kiro/crew/skills/centerfield-visitor/SKILL.md",
+  "mcpServers": {
+    "centerfield-visitor": {
+      "command": "uvx",
+      "args": ["centerfield-visitor-mcp"],
+      "env": { "CF_ENV_FILE": "/absolute/path/to/.env" }
+    }
+  },
+  "tools": ["@centerfield-visitor"],
+  "allowedTools": [
+    "@centerfield-visitor/validate_configuration",
+    "@centerfield-visitor/preview_visitors_from_text",
+    "@centerfield-visitor/preview_visitors_from_file"
+  ]
+}

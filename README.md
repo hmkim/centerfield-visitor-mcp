@@ -2,169 +2,135 @@
 
 An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that automates
 visitor reservations for the Centerfield building (`www.centerfield.co.kr`).
-Use it from any MCP-compatible AI agent (Kiro CLI, Claude Code, Strands Agents, …)
-to register visitors with natural language — single entries, pasted text, or Excel/CSV files.
+Use it from any MCP-compatible agent — **Kiro CLI / Kiro IDE / KiroCrew, Claude Code, Claude Desktop,
+Codex CLI, Cursor, Strands Agents (local stdio)** and **Amazon Quick or any remote client (streamable HTTP)** —
+to register visitors with natural language: single entries, pasted text, survey exports, or Excel/CSV files.
 
-> 센터필드 빌딩 방문예약을 자동화하는 MCP 서버입니다. Kiro CLI, Claude Code, Strands Agents 등
-> MCP 호환 AI 에이전트에서 자연어로 방문자를 등록할 수 있습니다.
+> 센터필드 빌딩 방문예약을 자동화하는 MCP 서버입니다. 로컬 에이전트(Kiro, Claude Code, Codex, Cursor …)는
+> stdio로, Amazon Quick 같은 원격 에이전트는 streamable HTTP로 같은 서버를 씁니다.
 
-This server runs **entirely locally** — `uvx` downloads and runs it on your machine,
-and it talks directly to `www.centerfield.co.kr`. No backend service, API gateway, or
-hosting account is required.
+The stdio server runs **entirely locally** — `uvx` downloads and runs it on your machine, and it talks
+directly to `www.centerfield.co.kr`. No backend service is required for local agents.
 
-> 이 서버는 **로컬에서 단독 실행**됩니다. `uvx`가 내 컴퓨터에서 서버를 받아 실행하고,
-> 센터필드 사이트(`www.centerfield.co.kr`)에 직접 요청합니다. 별도의 백엔드 서버나 클라우드 계정이 필요 없습니다.
-
-## Installation
-
-No manual install needed — run directly with [`uvx`](https://docs.astral.sh/uv/):
+## Quick start
 
 ```bash
-uvx centerfield-visitor-mcp
+mkdir -p ~/.config/centerfield-visitor-mcp
+cp .env.example ~/.config/centerfield-visitor-mcp/.env   # fill CF_COMPANY_NAME, CF_PERSON_IN_CHARGE_MOBILE
+uvx centerfield-visitor-mcp                               # stdio; every client below can launch this
 ```
 
-## MCP client configuration
+`~/.config/centerfield-visitor-mcp/.env` is read automatically, so client configs need no secrets.
 
-**Set your own registered values via environment variables** — nothing is hardcoded.
+## Client setup
 
-### Claude Code
+| Client | How | Details |
+|---|---|---|
+| Kiro CLI | `~/.kiro/settings/mcp.json` | [`clients/kiro/mcp.json`](clients/kiro/mcp.json) |
+| Kiro IDE | `.kiro/settings/mcp.json` (workspace) | same file |
+| KiroCrew | agent JSON `mcpServers` + `tools` | [`clients/kirocrew/agent-snippet.json`](clients/kirocrew/agent-snippet.json) |
+| Claude Code | `claude mcp add centerfield-visitor --scope user -- uvx centerfield-visitor-mcp` | [`clients/claude-code/`](clients/claude-code/README.md) |
+| Claude Desktop | `claude_desktop_config.json` | [`clients/claude-desktop/`](clients/claude-desktop/claude_desktop_config.json) |
+| Codex CLI | `~/.codex/config.toml` `[mcp_servers.centerfield-visitor]` | [`clients/codex/config.toml`](clients/codex/config.toml) |
+| Cursor | `.cursor/mcp.json` | [`clients/cursor/mcp.json`](clients/cursor/mcp.json) |
+| Strands Agents | `MCPClient(stdio_client(...))` | [`clients/strands/example.py`](clients/strands/example.py) |
+| Amazon Quick | remote streamable HTTP + OAuth 2LO | [`clients/remote/README.md`](clients/remote/README.md) |
 
-Register the server with the `claude mcp add` command:
+Agent skill (Agent Skills spec, works in Claude Code / Kiro / KiroCrew): [`SKILL.md`](SKILL.md) —
+also shipped as the project skill `.claude/skills/centerfield-visitor/SKILL.md`.
 
-```bash
-claude mcp add centerfield-visitor \
-  -e CF_COMPANY_NAME="Your Company Name" \
-  -e CF_PERSON_IN_CHARGE_MOBILE="010XXXXXXXX" \
-  -e CF_BUILDING="east" \
-  -e CF_BUILDING_KEY="East" \
-  -- uvx centerfield-visitor-mcp
+## Tools
+
+| Tool | Side effect | Notes |
+|---|---|---|
+| `validate_configuration()` | none | Checks company, approval contact and floor list against the live site |
+| `preview_visitors_from_text(text, default_visit_date, default_visit_time, default_floor, default_purpose)` | none | Parse + validate pasted CSV/TSV |
+| `register_visitor(..., dry_run)` | **creates a reservation** | `dry_run=true` validates (input + site) without submitting |
+| `register_visitors_from_text(text, defaults…, dry_run)` | **creates reservations** | Sequential, one summary string returned |
+| `preview_visitors_from_file(file_path, defaults…)` | none | stdio deployments only (needs a shared filesystem) |
+| `register_visitors_from_file(file_path, defaults…, dry_run)` | **creates reservations** | stdio deployments only |
+
+Recommended flow: `validate_configuration` once → `preview_*` → human confirms → `register_*`.
+The `default_*` arguments fill columns that attendee lists usually lack (visit date/time/floor).
+
+## Input constraints
+
+| Field | Rule |
+|-------|------|
+| `visit_time` | `HH:MM`, 30-minute intervals, `08:00`–`20:00` (`HH:MM:SS` from spreadsheets tolerated) |
+| `visit_date` | `YYYY-MM-DD`, today or later |
+| `floor` | `12` or `18`; if omitted, `CF_DEFAULT_FLOOR` (default `12`) |
+| `visit_purpose` | `meeting` (default), `visit_business`, `interview`, `tour`, `construction`, `others` |
+| `visitor_mobile` | Korean mobile; `010-1234-5678`, `010 1234 5678`, `+82 10-1234-5678` are normalized to `01012345678`; empty or non-mobile values are rejected |
+| `visitor_email` | valid email address |
+| duplicates | rows with the same mobile + date + time inside one request are skipped and reported |
+
+## File / text format
+
+Header row in Korean or English; survey-export headers are recognized too
+(`Full Name`, `Email`, `연락처(…)`, `소속/회사 (…)`). Unknown columns are ignored.
+
+```
+이름,회사,전화번호,이메일,방문일,방문시간,층
+홍길동,ABC주식회사,01012345678,hong@abc.com,2026-11-15,10:00,12
 ```
 
-Verify it is connected:
+Lists without date/time columns: pass `default_visit_date="2026-11-15"`, `default_visit_time="10:00"`.
 
-```bash
-claude mcp list
-```
-
-Then just ask in natural language, e.g.
-*"센터필드에 홍길동(ABC주식회사, 01012345678, hong@abc.com)을 2026-07-26 15:00, 18층으로 방문 등록해줘"*.
-
-### Kiro CLI / other MCP clients
-
-Add the server to your MCP client config (example: Kiro CLI `mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "centerfield-visitor": {
-      "command": "uvx",
-      "args": ["centerfield-visitor-mcp"],
-      "env": {
-        "CF_COMPANY_NAME": "Your Company Name",
-        "CF_PERSON_IN_CHARGE_MOBILE": "010XXXXXXXX",
-        "CF_BUILDING": "east",
-        "CF_BUILDING_KEY": "East"
-      }
-    }
-  }
-}
-```
-
-## Configuration with a `.env` file (recommended)
-
-Keep real values out of your MCP client config and out of Git:
-
-```bash
-cp .env.example .env      # .env is git-ignored
-# edit .env → CF_COMPANY_NAME, CF_PERSON_IN_CHARGE_MOBILE, ...
-```
-
-Then point the MCP client at that file with `CF_ENV_FILE` only:
-
-```json
-{
-  "mcpServers": {
-    "centerfield-visitor": {
-      "command": "uvx",
-      "args": ["--from", "/absolute/path/to/centerfield-visitor-mcp", "centerfield-visitor-mcp"],
-      "env": { "CF_ENV_FILE": "/absolute/path/to/centerfield-visitor-mcp/.env" }
-    }
-  }
-}
-```
-
-`.env` files are loaded in this order (later overrides earlier):
-`~/.config/centerfield-visitor-mcp/.env` → `./.env` (working directory) → `$CF_ENV_FILE`.
-**Process environment variables (the MCP client's `env` block) always win over `.env`**,
-so don't set the same `CF_*` keys in both places. If required values are missing, the
-registration tools refuse to run and report which keys and `.env` files were checked.
-
-> `.env`를 쓰는 경우 MCP 클라이언트 설정에는 `CF_ENV_FILE`만 두세요. 같은 키를 양쪽에
-> 넣으면 클라이언트 env 값이 `.env`보다 우선합니다.
-
-## Configuration (environment variables)
+## Configuration
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `CF_COMPANY_NAME` | Tenant company name as registered in Centerfield | _(empty)_ | ✅ |
 | `CF_PERSON_IN_CHARGE_MOBILE` | Mobile number of the approval contact registered in Centerfield | _(empty)_ | ✅ |
-| `CF_BUILDING` | Building code | `east` | |
-| `CF_BUILDING_KEY` | Building display key | `East` | |
-| `CF_DEFAULT_FLOOR` | Floor used when a tool call / file row omits `floor` (`12` or `18`) | `12` | |
+| `CF_BUILDING` / `CF_BUILDING_KEY` | Building code / display key | `east` / `East` | |
+| `CF_DEFAULT_FLOOR` | Floor when a row omits it (`12` or `18`) | `12` | |
+| `CF_TRANSPORT` | `stdio` or `streamable-http` | `stdio` | |
+| `CF_HTTP_HOST` / `CF_HTTP_PORT` / `CF_HTTP_PATH` | HTTP bind address and path | `127.0.0.1` / `8000` / `/mcp` | |
+| `CF_HTTP_STATELESS` / `CF_HTTP_JSON_RESPONSE` | Streamable HTTP mode | `true` / `true` | |
+| `CF_HTTP_ALLOWED_HOSTS` | Host allow-list for DNS-rebinding protection (empty = off) | _(empty)_ | |
+| `CF_EXPOSE_FILE_TOOLS` | Force file tools on/off | on for stdio, off for HTTP | |
 | `CF_CENTERFIELD_BASE_URL` | Centerfield base URL | `https://www.centerfield.co.kr` | |
 | `CF_REQUEST_TIMEOUT` | HTTP timeout (seconds) | `30` | |
-| `CF_BULK_MAX_VISITORS` | Max visitors per bulk request | `200` | |
-| `CF_REQUEST_DELAY` | Delay between bulk requests (seconds) | `0.5` | |
-| `CF_ENV_FILE` | Absolute path to a `.env` file to load (not prefixed-field; read at startup) | _(unset)_ | |
+| `CF_BULK_MAX_VISITORS` | Max visitors per bulk request (use `10` for Amazon Quick's 60 s limit) | `200` | |
+| `CF_REQUEST_DELAY` | Delay between submissions (seconds) | `0.5` | |
+| `CF_ENV_FILE` | Extra `.env` to load | _(unset)_ | |
 
-> **`CF_PERSON_IN_CHARGE_MOBILE` must be the mobile number registered as the tenant's
-> approval contact in Centerfield.** Reservations submitted with an unregistered number
-> will fail. Provide it through your environment — never commit a real phone number.
->
-> There is no separate "validate credentials" endpoint: the company name and approval
-> contact are checked live during a registration attempt. The fastest way to confirm
-> your values are correct is to register one visitor (or preview a bulk file first).
+`.env` load order (later overrides earlier): `~/.config/centerfield-visitor-mcp/.env` → `./.env` → `$CF_ENV_FILE`;
+process environment variables always win. Startup logs (stderr) list the files read and any problems.
 
-## Tools
+> `CF_PERSON_IN_CHARGE_MOBILE` must be the mobile number registered as the tenant's approval contact.
+> Run `validate_configuration` after setup — it checks both values live without creating a reservation.
 
-| Tool | Description |
-|------|-------------|
-| `register_visitor` | Register a single visitor |
-| `register_visitors_from_file` | Bulk register from an Excel (`.xlsx`) or CSV file |
-| `register_visitors_from_text` | Bulk register from pasted tab/CSV text |
-| `preview_visitors_from_file` | Preview parsed visitors from a file (no registration) |
+## Remote mode (Amazon Quick, hosted deployments)
 
-> **Recommended bulk workflow:** run `preview_visitors_from_file` first to confirm the
-> parsed rows look correct, then `register_visitors_from_file` to submit.
-
-## Input constraints
-
-Values are validated before any request is sent:
-
-| Field | Rule |
-|-------|------|
-| `visit_time` | `HH:MM`, 30-minute intervals, between `08:00` and `20:00` |
-| `floor` | `12` or `18` only; if omitted, defaults to `CF_DEFAULT_FLOOR` (which itself defaults to `12`) |
-| `visit_purpose` | `meeting` (default), `visit_business`, `interview`, `tour`, `construction`, `others` |
-| `visitor_mobile` | hyphens/spaces are stripped automatically (`010-1234-5678` → `01012345678`) |
-| `visitor_email` | must be a valid email address |
-| `visit_date` | `YYYY-MM-DD` |
-
-## File format
-
-Bulk tools accept Excel/CSV with these columns (Korean or English headers are auto-mapped):
-
+```bash
+CF_TRANSPORT=streamable-http CF_HTTP_HOST=0.0.0.0 uvx centerfield-visitor-mcp    # http://host:8000/mcp
+docker build --platform linux/arm64 -t centerfield-visitor-mcp .                 # or the container image
 ```
-visitor_name, visitor_company_name, visitor_mobile, visitor_email, visit_date, visit_time
-홍길동, ABC Inc., 01012345678, hong@abc.com, 2026-01-15, 10:00
+
+See [`clients/remote/README.md`](clients/remote/README.md) for the AgentCore Runtime + Cognito recipe and the
+Amazon Quick connector steps. Works with mcp SDK 1.x and 2.x.
+
+## Development & testing
+
+```bash
+uv sync --group dev
+uv run pytest                          # offline unit tests (mocked HTTP)
+uv run --with "mcp<2" pytest           # same suite on mcp SDK 1.x
+uv run python scripts/smoke_http.py    # streamable-http transport smoke test
+uv run pytest -m live                  # read-only checks against the live site (needs a real .env)
+CF_LIVE_REGISTER=1 CF_TEST_VISITOR_NAME=... CF_TEST_VISITOR_MOBILE=... CF_TEST_VISITOR_EMAIL=... uv run pytest -m live
 ```
+
+The last command creates one real reservation; confirm it in the Centerfield mobile app and cancel it there
+(there is no cancel API).
 
 ## How it works
 
-The server holds a single authenticated session against the Centerfield site,
-manages CSRF tokens automatically, verifies the tenant company and approval contact,
-then submits the reservation form. Bulk requests are processed sequentially with a
-configurable delay to avoid rate limiting.
+The server holds a single session against the Centerfield site, manages CSRF tokens, verifies the tenant company
+and approval contact, resolves the floor key, then submits the reservation form. Bulk requests are processed
+sequentially with a configurable delay.
 
 ## License
 
