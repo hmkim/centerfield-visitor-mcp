@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "centerfield-visitor": {
+      "command": "uvx",
+      "args": ["centerfield-visitor-mcp"],
+      "env": {
+        "CF_ENV_FILE": "${CF_ENV_FILE:-${HOME}/.config/centerfield-visitor-mcp/.env}"
+      }
+    }
+  }
+}
