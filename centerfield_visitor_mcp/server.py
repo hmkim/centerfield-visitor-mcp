@@ -53,8 +53,8 @@ def _map_columns(headers: list[str]) -> dict[int, str]:
     return mapping
 
 
-def _parse_csv_text(text: str) -> list[dict]:
-    reader = csv.reader(io.StringIO(text))
+def _parse_csv_text(text: str, delimiter: str = ",") -> list[dict]:
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
     rows = list(reader)
     if not rows:
         return []
@@ -74,6 +74,25 @@ def _parse_csv_text(text: str) -> list[dict]:
         if record.get("visitor_name"):
             records.append(record)
     return records
+
+
+def _normalize_excel_cell(field: str, value) -> str:
+    """Convert openpyxl cell values into the string formats VisitorIn expects."""
+    if field == "visit_date" and hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d")
+    if field == "visit_time":
+        if hasattr(value, "strftime"):  # datetime.time / datetime.datetime
+            return value.strftime("%H:%M")
+        if isinstance(value, float) and 0 <= value < 1:  # Excel fraction-of-day
+            minutes = round(value * 24 * 60)
+            return f"{minutes // 60:02d}:{minutes % 60:02d}"
+    if field == "floor" and isinstance(value, (int, float)):
+        return str(int(value))
+    if field == "visitor_mobile" and isinstance(value, (int, float)):
+        digits = str(int(value))
+        # Excel drops the leading 0 of Korean mobile numbers (01012345678 -> 1012345678)
+        return "0" + digits if digits.startswith("1") and len(digits) == 10 else digits
+    return str(value).strip()
 
 
 def _parse_excel(file_path: str) -> list[dict]:
@@ -100,13 +119,23 @@ def _parse_excel(file_path: str) -> list[dict]:
         record = {}
         for idx, field in col_map.items():
             if idx < len(row) and row[idx] is not None:
-                value = row[idx]
-                if field == "visit_date" and hasattr(value, "strftime"):
-                    value = value.strftime("%Y-%m-%d")
-                record[field] = str(value).strip()
+                record[field] = _normalize_excel_cell(field, row[idx])
         if record.get("visitor_name"):
             records.append(record)
     return records
+
+
+def _config_error() -> str | None:
+    """Return a user-facing message when required settings are missing."""
+    missing = settings.missing_required()
+    if not missing:
+        return None
+    loaded = settings.loaded_env_files() or ["(없음)"]
+    return (
+        "센터필드 MCP 설정이 비어 있어 등록할 수 없습니다: " + ", ".join(missing) + "\n"
+        "읽은 .env 파일: " + ", ".join(loaded) + "\n"
+        ".env.example을 .env로 복사해 값을 채우고, MCP 설정에 CF_ENV_FILE=<.env 절대경로>를 지정하세요."
+    )
 
 
 def _build_visitors(records: list[dict]) -> tuple[list[VisitorIn], list[str]]:
@@ -114,8 +143,10 @@ def _build_visitors(records: list[dict]) -> tuple[list[VisitorIn], list[str]]:
     errors = []
     for i, rec in enumerate(records):
         try:
-            rec.setdefault("visit_purpose", "meeting")
-            rec.setdefault("floor", settings.default_floor)
+            if not rec.get("visit_purpose"):
+                rec["visit_purpose"] = "meeting"
+            if not rec.get("floor"):
+                rec["floor"] = settings.default_floor
             visitors.append(VisitorIn(**rec))
         except Exception as e:
             errors.append(f"  행 {i + 2}: {e}")
@@ -149,6 +180,8 @@ async def register_visitor(
         visit_purpose: 방문 목적 (meeting, visit_business, interview, tour, construction, others)
         floor: 방문 층수 (12 또는 18). 생략 시 CF_DEFAULT_FLOOR 값을 사용합니다.
     """
+    if err := _config_error():
+        return err
     try:
         visitor = VisitorIn(
             visitor_name=visitor_name,
@@ -181,6 +214,8 @@ async def register_visitors_from_file(file_path: str) -> str:
     Args:
         file_path: 파일의 절대 경로 (.xlsx 또는 .csv)
     """
+    if err := _config_error():
+        return err
     path = Path(file_path)
     if not path.exists():
         return f"파일을 찾을 수 없습니다: {file_path}"
@@ -204,6 +239,12 @@ async def register_visitors_from_file(file_path: str) -> str:
 
     if not visitors:
         return "유효한 방문자 정보가 없습니다.\n검증 오류:\n" + "\n".join(errors)
+
+    if len(visitors) > settings.bulk_max_visitors:
+        return (
+            f"한 번에 최대 {settings.bulk_max_visitors}명까지 등록할 수 있습니다 "
+            f"(입력: {len(visitors)}명). 파일을 나눠서 다시 시도해주세요."
+        )
 
     result = await register_bulk(visitors)
 
@@ -236,13 +277,13 @@ async def register_visitors_from_text(text: str) -> str:
     Args:
         text: 헤더 포함 방문자 목록 텍스트 (CSV 또는 탭 구분)
     """
+    if err := _config_error():
+        return err
     if not text.strip():
         return "입력 텍스트가 비어있습니다. 헤더행과 데이터를 포함해주세요."
 
-    if "\t" in text.split("\n")[0]:
-        text = text.replace("\t", ",")
-
-    records = _parse_csv_text(text)
+    delimiter = "\t" if "\t" in text.split("\n")[0] else ","
+    records = _parse_csv_text(text, delimiter=delimiter)
 
     if not records:
         return (
@@ -256,6 +297,12 @@ async def register_visitors_from_text(text: str) -> str:
 
     if not visitors:
         return "유효한 방문자 정보가 없습니다.\n검증 오류:\n" + "\n".join(errors)
+
+    if len(visitors) > settings.bulk_max_visitors:
+        return (
+            f"한 번에 최대 {settings.bulk_max_visitors}명까지 등록할 수 있습니다 "
+            f"(입력: {len(visitors)}명). 파일을 나눠서 다시 시도해주세요."
+        )
 
     result = await register_bulk(visitors)
 
@@ -314,6 +361,12 @@ async def preview_visitors_from_file(file_path: str) -> str:
 
 
 def main():
+    # stdio transport: logs go to stderr, never stdout
+    loaded = settings.loaded_env_files()
+    logger.info("Loaded .env files: %s", loaded or "none")
+    missing = settings.missing_required()
+    if missing:
+        logger.warning("Missing required settings: %s — registration tools will refuse to run", ", ".join(missing))
     mcp.run(transport="stdio")
 
 

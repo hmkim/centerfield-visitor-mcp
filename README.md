@@ -70,6 +70,38 @@ Add the server to your MCP client config (example: Kiro CLI `mcp.json`):
 }
 ```
 
+## Configuration with a `.env` file (recommended)
+
+Keep real values out of your MCP client config and out of Git:
+
+```bash
+cp .env.example .env      # .env is git-ignored
+# edit .env → CF_COMPANY_NAME, CF_PERSON_IN_CHARGE_MOBILE, ...
+```
+
+Then point the MCP client at that file with `CF_ENV_FILE` only:
+
+```json
+{
+  "mcpServers": {
+    "centerfield-visitor": {
+      "command": "uvx",
+      "args": ["--from", "/absolute/path/to/centerfield-visitor-mcp", "centerfield-visitor-mcp"],
+      "env": { "CF_ENV_FILE": "/absolute/path/to/centerfield-visitor-mcp/.env" }
+    }
+  }
+}
+```
+
+`.env` files are loaded in this order (later overrides earlier):
+`~/.config/centerfield-visitor-mcp/.env` → `./.env` (working directory) → `$CF_ENV_FILE`.
+**Process environment variables (the MCP client's `env` block) always win over `.env`**,
+so don't set the same `CF_*` keys in both places. If required values are missing, the
+registration tools refuse to run and report which keys and `.env` files were checked.
+
+> `.env`를 쓰는 경우 MCP 클라이언트 설정에는 `CF_ENV_FILE`만 두세요. 같은 키를 양쪽에
+> 넣으면 클라이언트 env 값이 `.env`보다 우선합니다.
+
 ## Configuration (environment variables)
 
 | Variable | Description | Default | Required |
@@ -83,6 +115,7 @@ Add the server to your MCP client config (example: Kiro CLI `mcp.json`):
 | `CF_REQUEST_TIMEOUT` | HTTP timeout (seconds) | `30` | |
 | `CF_BULK_MAX_VISITORS` | Max visitors per bulk request | `200` | |
 | `CF_REQUEST_DELAY` | Delay between bulk requests (seconds) | `0.5` | |
+| `CF_ENV_FILE` | Absolute path to a `.env` file to load (not prefixed-field; read at startup) | _(unset)_ | |
 
 > **`CF_PERSON_IN_CHARGE_MOBILE` must be the mobile number registered as the tenant's
 > approval contact in Centerfield.** Reservations submitted with an unregistered number

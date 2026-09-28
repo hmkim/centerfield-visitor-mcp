@@ -31,7 +31,9 @@ class VisitorIn(BaseModel):
     @field_validator("visit_time")
     @classmethod
     def validate_time(cls, v: str) -> str:
-        parts = v.split(":")
+        parts = v.strip().split(":")
+        if len(parts) == 3 and parts[2] in ("0", "00"):
+            parts = parts[:2]  # tolerate HH:MM:SS from spreadsheets
         if len(parts) != 2:
             raise ValueError("visit_time must be HH:MM format")
         hour, minute = int(parts[0]), int(parts[1])
