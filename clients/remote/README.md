@@ -11,6 +11,11 @@ uvx centerfield-visitor-mcp
 Endpoint: `http://<host>:8000/mcp` (stateless, JSON responses). File-path tools are hidden in this mode;
 agents paste the list as text (`*_from_text`). Smoke test: `uv run python scripts/smoke_http.py`.
 
+DNS-rebinding protection: a `0.0.0.0` bind has no built-in Host allow-list, so set
+`CF_HTTP_ALLOWED_HOSTS` to the hostname(s) clients use (e.g. `mcp.example.com:*`, or the AgentCore
+runtime endpoint host). Left empty, the server starts with protection off and logs a warning; only do
+that when the HTTPS front in front of it validates `Host`/`Origin` itself.
+
 ## Amazon Quick (Connectors → Model Context Protocol)
 
 Facts from the Quick user guide (checked 2026-09): remote servers only (stdio not supported), Streamable HTTP

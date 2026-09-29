@@ -74,8 +74,9 @@ class Settings(BaseSettings):
     http_path: str = "/mcp"
     http_stateless: bool = True
     http_json_response: bool = True
-    # Comma-separated Host header allow-list for DNS-rebinding protection.
-    # Empty = protection off (typical behind a managed HTTPS front such as AgentCore).
+    # Comma-separated Host header allow-list for DNS-rebinding protection (``host:*`` = any port).
+    # Empty: loopback binds use a built-in localhost allow-list; non-loopback binds run with
+    # protection OFF and log a warning (set this to the public hostname behind AgentCore/ALB).
     http_allowed_hosts: str = ""
 
     # File-path tools (register/preview *_from_file) only make sense when the agent and
