@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 
 import pytest
 
@@ -164,6 +165,61 @@ async def test_survey_export_through_text_tool(fake_bulk, survey_text):
     # all 10 rows map (name/email/mobile/company); rows without a phone are reported as errors
     assert "파싱 결과: 2명 유효, 8건 오류" in out
     assert "visitor_mobile" in out
+    # the attendance column is detected and surfaced so the agent can filter
+    assert "참석 형태 컬럼 감지: 온라인 7, 오프라인 3" in out and "participation 인자" in out
+
+
+async def test_participation_filter_keeps_only_offline_rows(fake_bulk, survey_text):
+    out = await server.preview_visitors_from_text(
+        survey_text, default_visit_date=future(), default_visit_time="14:00", default_floor="18", participation="오프라인"
+    )
+    assert "참석 형태 필터 '오프라인': 3건 대상, 7건 제외 (온라인 7)" in out
+    # 3 offline rows: 2 without a phone -> errors, 1 valid; no online attendee leaks through
+    assert "파싱 결과: 1명 유효, 2건 오류" in out
+    assert "정오프라인" in out and "이온라인" not in out
+
+
+@pytest.mark.parametrize("value", ["오프라인", "오프 라인", "OFFLINE".lower(), " 오프라인 "])
+async def test_participation_filter_matching_is_lenient(fake_bulk, value):
+    text = "이름,회사,전화번호,이메일,참석 형태\n홍길동,ABC,01012345678,hong@example.com,오프라인\n김영희,XYZ,01087654321,kim@example.com,온라인\n"
+    out = await server.preview_visitors_from_text(text, default_visit_date=future(), default_visit_time="10:00", participation=value)
+    if value.strip().lower() == "offline":
+        assert "0건 대상" in out  # Korean data, English filter: nothing matches, and that is reported
+    else:
+        assert "1건 대상, 1건 제외 (온라인 1)" in out and "홍길동" in out and "김영희" not in out
+
+
+async def test_participation_value_never_reaches_visitor_model(fake_bulk):
+    text = "이름,회사,전화번호,이메일,참석 형태\n홍길동,ABC,01012345678,hong@example.com,오프라인\n"
+    out = await server.register_visitors_from_text(text, default_visit_date=future(), default_visit_time="10:00", participation="오프라인")
+    assert "총 1명 중 1명 성공" in out and "참석 형태 필터 '오프라인': 1건 대상, 0건 제외 (없음)" in out
+    assert fake_bulk[-1]["visitors"][0].visitor_name == "홍길동"
+
+
+async def test_register_with_filter_refuses_when_column_missing(fake_bulk):
+    before = len(fake_bulk)
+    text = "이름,회사,전화번호,이메일\n홍길동,ABC,01012345678,hong@example.com\n"
+    out = await server.register_visitors_from_text(text, default_visit_date=future(), default_visit_time="10:00", participation="오프라인")
+    assert "참석 형태 컬럼을 찾을 수 없어" in out and len(fake_bulk) == before  # nothing registered
+
+
+async def test_preview_with_filter_but_no_column_shows_unfiltered_preview():
+    text = "이름,회사,전화번호,이메일\n홍길동,ABC,01012345678,hong@example.com\n"
+    out = await server.preview_visitors_from_text(text, default_visit_date=future(), default_visit_time="10:00", participation="오프라인")
+    assert out.startswith("참석 형태 컬럼을 찾을 수 없어") and "(참석 형태 필터 미적용 미리보기)" in out and "홍길동" in out
+
+
+async def test_register_with_filter_matching_nothing(fake_bulk):
+    before = len(fake_bulk)
+    text = "이름,회사,전화번호,이메일,참석 형태\n홍길동,ABC,01012345678,hong@example.com,온라인\n"
+    out = await server.register_visitors_from_text(text, default_visit_date=future(), default_visit_time="10:00", participation="오프라인")
+    assert "0건 대상, 1건 제외 (온라인 1)" in out and "처리할 방문자가 없습니다" in out and len(fake_bulk) == before
+
+
+async def test_rows_with_empty_participation_are_dropped_by_filter(fake_bulk):
+    text = "이름,회사,전화번호,이메일,참석 형태\n홍길동,ABC,01012345678,hong@example.com,\n김영희,XYZ,01087654321,kim@example.com,오프라인\n"
+    out = await server.preview_visitors_from_text(text, default_visit_date=future(), default_visit_time="10:00", participation="오프라인")
+    assert "1건 대상, 1건 제외 ((빈값) 1)" in out and "김영희" in out and "홍길동" not in out
 
 
 # ── file tools ────────────────────────────────────────────────────────────
@@ -187,6 +243,23 @@ async def test_register_file_with_defaults(fake_bulk, write_csv):
     assert "총 1명 중 1명 성공" in out
     v = fake_bulk[-1]["visitors"][0]
     assert (v.visitor_company_name, v.floor, v.visit_time) == ("ABC", "18", "14:00")
+
+
+async def test_file_tools_participation_filter(fake_bulk, write_xlsx):
+    fixture = Path(__file__).parent / "fixtures" / "attendee_list_no_dates.csv"
+    plain = await server.preview_visitors_from_file(str(fixture), default_visit_date=future(), default_visit_time="14:00")
+    assert "참석 형태 컬럼 감지" in plain
+    offline = await server.preview_visitors_from_file(str(fixture), default_visit_date=future(), default_visit_time="14:00", participation="오프라인")
+    assert "참석 형태 필터 '오프라인'" in offline and "온라인" not in offline.split("파싱 결과")[1]
+
+    xlsx = write_xlsx("survey.xlsx", [
+        ["Full Name", "Email", "연락처", "어떤 형태로 참석하시나요?", "소속/회사"],
+        ["홍길동", "hong@example.com", 1012345678, "오프라인", "ABC"],
+        ["김온라인", "kim@example.com", 1087654321, "온라인", "XYZ"],
+    ])
+    out = await server.register_visitors_from_file(xlsx, default_visit_date=future(), default_visit_time="14:00", participation="오프라인")
+    assert "1건 대상, 1건 제외 (온라인 1)" in out and "총 1명 중 1명 성공" in out
+    assert [v.visitor_name for v in fake_bulk[-1]["visitors"]] == ["홍길동"]
 
 
 # ── live (opt-in) ─────────────────────────────────────────────────────────

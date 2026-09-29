@@ -102,6 +102,9 @@ def main() -> int:
             assert resp.status_code == 200, (resp.status_code, resp.text[:300])
             init = parse_result(resp)
             assert init["result"]["serverInfo"]["name"].startswith("Centerfield"), init
+            from centerfield_visitor_mcp import __version__ as expected_version
+
+            assert init["result"]["serverInfo"]["version"] == expected_version, (init["result"]["serverInfo"], expected_version)
             session = resp.headers.get("mcp-session-id")
 
             note = rpc(client, url, "notifications/initialized", {}, rpc_id=None, session=session)

@@ -85,11 +85,23 @@ def _http_kwargs(settings: Any) -> dict[str, Any]:
     return kwargs
 
 
-def create_server(name: str, settings: Any, **extra: Any):
-    """Instantiate the SDK server class for the configured transport."""
+def create_server(name: str, settings: Any, version: str = "", **extra: Any):
+    """Instantiate the SDK server class for the configured transport.
+
+    ``version`` becomes ``serverInfo.version`` in the initialize response. mcp 2.x takes it as a
+    constructor kwarg; mcp 1.x FastMCP has none, so it is set on the wrapped low-level server.
+    """
+    if MCP_MAJOR == 2 and version:
+        extra.setdefault("version", version)
     if MCP_MAJOR == 1 and settings.transport == "streamable-http":
-        return _ServerClass(name, **_http_kwargs(settings), **extra)
-    return _ServerClass(name, **extra)
+        server = _ServerClass(name, **_http_kwargs(settings), **extra)
+    else:
+        server = _ServerClass(name, **extra)
+    if MCP_MAJOR == 1 and version:
+        low_level = getattr(server, "_mcp_server", None)
+        if low_level is not None and hasattr(low_level, "version"):
+            low_level.version = version
+    return server
 
 
 def run_server(server: Any, settings: Any) -> None:
