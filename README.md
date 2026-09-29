@@ -44,14 +44,15 @@ also shipped as the project skill `.claude/skills/centerfield-visitor/SKILL.md`.
 | Tool | Side effect | Notes |
 |---|---|---|
 | `validate_configuration()` | none | Checks company, approval contact and floor list against the live site |
-| `preview_visitors_from_text(text, default_visit_date, default_visit_time, default_floor, default_purpose)` | none | Parse + validate pasted CSV/TSV |
+| `preview_visitors_from_text(text, default_visit_date, default_visit_time, default_floor, default_purpose, participation)` | none | Parse + validate pasted CSV/TSV |
 | `register_visitor(..., dry_run)` | **creates a reservation** | `dry_run=true` validates (input + site) without submitting |
-| `register_visitors_from_text(text, defaults…, dry_run)` | **creates reservations** | Sequential, one summary string returned |
-| `preview_visitors_from_file(file_path, defaults…)` | none | stdio deployments only (needs a shared filesystem) |
-| `register_visitors_from_file(file_path, defaults…, dry_run)` | **creates reservations** | stdio deployments only |
+| `register_visitors_from_text(text, defaults…, participation, dry_run)` | **creates reservations** | Sequential, one summary string returned |
+| `preview_visitors_from_file(file_path, defaults…, participation)` | none | stdio deployments only (needs a shared filesystem) |
+| `register_visitors_from_file(file_path, defaults…, participation, dry_run)` | **creates reservations** | stdio deployments only |
 
 Recommended flow: `validate_configuration` once → `preview_*` → human confirms → `register_*`.
 The `default_*` arguments fill columns that attendee lists usually lack (visit date/time/floor).
+`participation` keeps only rows whose attendance-type column contains the given text (see below).
 
 ## Input constraints
 
@@ -76,6 +77,12 @@ Header row in Korean or English; survey-export headers are recognized too
 ```
 
 Lists without date/time columns: pass `default_visit_date="2026-11-15"`, `default_visit_time="10:00"`.
+
+Attendance type (survey exports): a column such as `참석 형태` / `어떤 형태로 참석하시나요?` / `Participation`
+is detected and summarised in the preview (`참석 형태 컬럼 감지: 온라인 7, 오프라인 3`). Pass
+`participation="오프라인"` to process only rows whose value contains that text (case/space-insensitive; rows
+with an empty value are dropped and counted). If a filter is requested but the input has no such column,
+`register_*` refuses instead of registering everyone, and `preview_*` shows the unfiltered rows under a warning.
 
 ## Configuration
 
@@ -131,6 +138,12 @@ The last command creates one real reservation; confirm it in the Centerfield mob
 The server holds a single session against the Centerfield site, manages CSRF tokens, verifies the tenant company
 and approval contact, resolves the floor key, then submits the reservation form. Bulk requests are processed
 sequentially with a configurable delay.
+
+## MCP Registry
+
+Listed as `io.github.hmkim/centerfield-visitor-mcp` (see [`server.json`](server.json)).
+
+mcp-name: io.github.hmkim/centerfield-visitor-mcp
 
 ## License
 

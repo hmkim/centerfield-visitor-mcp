@@ -43,15 +43,30 @@ def test_normalize_column_maps(header, field):
 @pytest.mark.parametrize(
     "header",
     ["Submission ID", "Submitted On", "Submission Locale", "Internal Tags", "Comments", "직책/역할",
-     "어떤 형태로 참석하시나요?", "주최측에 더 전달하고 싶은 내용이 있다면 자유롭게 남겨주세요.", "", "   "],
+     "주최측에 더 전달하고 싶은 내용이 있다면 자유롭게 남겨주세요.", "", "   "],
 )
 def test_normalize_column_ignores_metadata(header):
     assert _normalize_column(header) is None
 
 
+@pytest.mark.parametrize(
+    "header",
+    ["어떤 형태로 참석하시나요?", "참석 형태", "참석형태", "참가 방식", "참석 유형", "Participation", "participation_type",
+     "Attendance type", "어떤 형태로 참가하시나요"],
+)
+def test_normalize_column_maps_participation(header):
+    assert _normalize_column(header) == "participation"
+
+
+def test_participation_header_does_not_steal_visitor_fields():
+    # The mobile header mentions 오프라인 inside parentheses; parentheses are stripped before matching.
+    assert _normalize_column("연락처(오프라인 참석신청시 당일 연락 가능 번호)") == "visitor_mobile"
+    assert _normalize_column("참석자 이름") == "visitor_name"
+
+
 def test_map_columns_survey_export():
     mapping = _map_columns(SURVEY_HEADERS)
-    assert set(mapping.values()) == {"visitor_name", "visitor_email", "visitor_mobile", "visitor_company_name"}
+    assert set(mapping.values()) == {"visitor_name", "visitor_email", "visitor_mobile", "visitor_company_name", "participation"}
     assert mapping[4] == "visitor_name" and mapping[5] == "visitor_email"
 
 

@@ -17,9 +17,11 @@ import csv
 import io
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import __version__
 from ._compat import MCP_MAJOR, create_server, run_server
 from .config import settings
 from .exceptions import CenterfieldError
@@ -29,7 +31,7 @@ from .service import check_configuration, register_bulk, register_single
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-mcp = create_server("Centerfield Visitor Reservation", settings)
+mcp = create_server("Centerfield Visitor Reservation", settings, version=__version__)
 
 # ── Column mapping ────────────────────────────────────────────────────────
 
@@ -42,6 +44,12 @@ COLUMN_ALIASES = {
     "visit_time": ["방문시간", "time", "visit_time", "시간"],
     "visit_purpose": ["목적", "purpose", "visit_purpose", "방문목적"],
     "floor": ["층", "floor", "방문층", "층수"],
+    # Attendance type of a survey/attendee export (e.g. 오프라인/온라인). Not a VisitorIn field:
+    # it only drives the optional `participation` filter of the list tools.
+    "participation": [
+        "참석형태", "참석 형태", "참가형태", "참가 형태", "참석방식", "참가방식", "참석유형", "참가유형",
+        "participation", "participation type", "attendance", "attendance type", "attendance_type",
+    ],
 }
 
 # Fuzzy fallback: (normalized stem, field). Longest/most specific stems first.
@@ -49,6 +57,9 @@ _STEMS: list[tuple[str, str]] = [
     ("방문시간", "visit_time"), ("방문일자", "visit_date"), ("방문날짜", "visit_date"),
     ("방문목적", "visit_purpose"), ("방문자이름", "visitor_name"), ("방문자명", "visitor_name"),
     ("방문층", "floor"), ("방문일", "visit_date"),
+    ("참석형태", "participation"), ("참가형태", "participation"), ("참석방식", "participation"),
+    ("참가방식", "participation"), ("참석유형", "participation"), ("participation", "participation"),
+    ("attendance", "participation"), ("형태로참석", "participation"), ("형태로참가", "participation"),
     ("visitorname", "visitor_name"), ("fullname", "visitor_name"),
     ("companyname", "visitor_company_name"), ("visitorcompany", "visitor_company_name"),
     ("회사이름", "visitor_company_name"), ("회사명", "visitor_company_name"),
@@ -211,12 +222,57 @@ class RowDefaults:
     purpose: str = ""
 
 
+_VALUE_NOISE_RE = re.compile(r"[\s\-_/·.]")
+
+
+def _norm_value(value) -> str:
+    return _VALUE_NOISE_RE.sub("", str(value or "")).lower()
+
+
+_NO_PARTICIPATION_COLUMN_MSG = (
+    "참석 형태 컬럼을 찾을 수 없어 participation 필터를 적용할 수 없습니다. "
+    "헤더에 '참석 형태' / '어떤 형태로 참석하시나요?' / 'participation' 같은 컬럼이 있어야 합니다. "
+    "필터 없이 전체를 처리하려면 participation 인자를 비워두세요."
+)
+
+
+def _apply_participation_filter(records: list[dict], participation: str) -> tuple[list[dict], list[str], str | None]:
+    """Return (kept_records, info_lines, error).
+
+    - Empty filter: records pass through. If the input has a participation column, one info line
+      summarises its values so the agent can decide whether to filter.
+    - Filter given but no participation column: error (nothing must be processed by mistake).
+    - Filter given: keep rows whose participation value contains the filter text
+      (case/space/hyphen-insensitive); rows with an empty value are dropped and reported.
+    """
+    has_col = any("participation" in rec for rec in records)
+    wanted = _norm_value(participation)
+    if not wanted:
+        if not has_col:
+            return records, [], None
+        counts = Counter(rec.get("participation", "") or "(빈값)" for rec in records)
+        summary = ", ".join(f"{value} {n}" for value, n in counts.most_common())
+        return records, [
+            f"참석 형태 컬럼 감지: {summary} — 특정 형태만 처리하려면 participation 인자를 지정하세요 (예: 오프라인)"
+        ], None
+    if not has_col:
+        return records, [], _NO_PARTICIPATION_COLUMN_MSG
+    kept = [rec for rec in records if wanted in _norm_value(rec.get("participation"))]
+    dropped = Counter(
+        rec.get("participation", "") or "(빈값)" for rec in records if wanted not in _norm_value(rec.get("participation"))
+    )
+    detail = ", ".join(f"{value} {n}" for value, n in dropped.most_common()) or "없음"
+    info = [f"참석 형태 필터 '{participation.strip()}': {len(kept)}건 대상, {sum(dropped.values())}건 제외 ({detail})"]
+    return kept, info, None
+
+
 def _build_visitors(records: list[dict], defaults: RowDefaults = RowDefaults()) -> tuple[list[VisitorIn], list[str]]:
     visitors: list[VisitorIn] = []
     errors: list[str] = []
     seen: dict[tuple[str, str, str], int] = {}
     for i, rec in enumerate(records):
         row = rec.pop("_row", i + 2)
+        rec.pop("participation", None)  # filter-only column, not part of VisitorIn
         try:
             if not rec.get("visit_date") and defaults.visit_date:
                 rec["visit_date"] = defaults.visit_date
@@ -279,8 +335,9 @@ def _defaults(default_visit_date: str, default_visit_time: str, default_floor: s
     )
 
 
-def _preview_text(visitors: list[VisitorIn], errors: list[str]) -> str:
-    lines = [f"파싱 결과: {len(visitors)}명 유효, {len(errors)}건 오류\n"]
+def _preview_text(visitors: list[VisitorIn], errors: list[str], info: list[str] | None = None) -> str:
+    lines = list(info or [])
+    lines.append(f"파싱 결과: {len(visitors)}명 유효, {len(errors)}건 오류\n")
     for i, v in enumerate(visitors, 1):
         lines.append(
             f"  {i}. {v.visitor_name} | {v.visitor_company_name} | "
@@ -293,9 +350,11 @@ def _preview_text(visitors: list[VisitorIn], errors: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _bulk_summary(result, errors: list[str], dry_run: bool) -> str:
+def _bulk_summary(result, errors: list[str], dry_run: bool, info: list[str] | None = None) -> str:
     head = "일괄 검증 결과 (dry run, 미제출)" if dry_run else "일괄 등록 결과"
     summary = f"{head}: 총 {result.total}명 중 {result.succeeded}명 성공, {result.failed}명 실패"
+    if info:
+        summary = "\n".join(info) + "\n" + summary
     if errors:
         summary += f"\n\n파싱 단계에서 건너뛴 행 ({len(errors)}건):\n" + "\n".join(errors)
     if result.failed > 0:
@@ -304,19 +363,35 @@ def _bulk_summary(result, errors: list[str], dry_run: bool) -> str:
     return summary
 
 
-async def _register_records(records: list[dict], defaults: RowDefaults, dry_run: bool, empty_msg: str) -> str:
+def _preview_records(records: list[dict], defaults: RowDefaults, participation: str) -> str:
+    records, info, err = _apply_participation_filter(records, participation)
+    visitors, errors = _build_visitors(records, defaults)
+    if err:
+        # Show what would be processed, but make the failed filter impossible to miss.
+        return err + "\n\n(참석 형태 필터 미적용 미리보기)\n" + _preview_text(visitors, errors)
+    return _preview_text(visitors, errors, info)
+
+
+async def _register_records(
+    records: list[dict], defaults: RowDefaults, dry_run: bool, empty_msg: str, participation: str = ""
+) -> str:
     if not records:
         return empty_msg
+    records, info, err = _apply_participation_filter(records, participation)
+    if err:
+        return err
+    if not records:
+        return "\n".join(info) + "\n참석 형태 필터에 해당하는 행이 없어 처리할 방문자가 없습니다."
     visitors, errors = _build_visitors(records, defaults)
     if not visitors:
-        return "유효한 방문자 정보가 없습니다.\n검증 오류:\n" + "\n".join(errors)
+        return "\n".join(info + ["유효한 방문자 정보가 없습니다.", "검증 오류:"] + errors)
     if len(visitors) > settings.bulk_max_visitors:
         return (
             f"한 번에 최대 {settings.bulk_max_visitors}명까지 등록할 수 있습니다 "
             f"(입력: {len(visitors)}명). 명단을 나눠서 다시 시도해주세요."
         )
     result = await register_bulk(visitors, dry_run=dry_run)
-    return _bulk_summary(result, errors, dry_run)
+    return _bulk_summary(result, errors, dry_run, info)
 
 
 _EMPTY_TEXT_MSG = (
@@ -416,6 +491,7 @@ async def preview_visitors_from_text(
     default_visit_time: str = "",
     default_floor: str = "",
     default_purpose: str = "",
+    participation: str = "",
 ) -> str:
     """Preview parsed visitor rows from pasted CSV/TSV text without registering.
 
@@ -425,14 +501,14 @@ async def preview_visitors_from_text(
         default_visit_time: 행에 방문시간이 없을 때 적용할 시간 (HH:MM, 30분 단위, 08:00~20:00)
         default_floor: 행에 층이 없을 때 적용할 층 (12 또는 18). 생략 시 CF_DEFAULT_FLOOR
         default_purpose: 행에 목적이 없을 때 적용할 방문 목적. 생략 시 meeting
+        participation: 참석 형태 필터 (예: 오프라인). 참석 형태 컬럼('어떤 형태로 참석하시나요?' 등) 값에 이 문자열이 포함된 행만 처리
     """
     if not text.strip():
         return "입력 텍스트가 비어있습니다. 헤더행과 데이터를 포함해주세요."
     records = _parse_csv_text(text, delimiter=_detect_delimiter(text))
     if not records:
         return _EMPTY_TEXT_MSG
-    visitors, errors = _build_visitors(records, _defaults(default_visit_date, default_visit_time, default_floor, default_purpose))
-    return _preview_text(visitors, errors)
+    return _preview_records(records, _defaults(default_visit_date, default_visit_time, default_floor, default_purpose), participation)
 
 
 @mcp.tool(description="텍스트(복사/붙여넣기)로 방문자 목록을 입력받아 일괄 등록합니다. 날짜/시간 컬럼이 없는 참석자 명단은 default_visit_date/default_visit_time을 함께 지정하세요. dry_run=true면 제출하지 않습니다. Keywords: 센터필드, 방문자 등록, 텍스트 입력, 복사 붙여넣기, paste visitors, text registration, 일괄 등록, 방문자 목록")
@@ -442,6 +518,7 @@ async def register_visitors_from_text(
     default_visit_time: str = "",
     default_floor: str = "",
     default_purpose: str = "",
+    participation: str = "",
     dry_run: bool = False,
 ) -> str:
     """Register multiple visitors from pasted text (CSV-like or tab-separated).
@@ -459,6 +536,7 @@ async def register_visitors_from_text(
         default_visit_time: 행에 방문시간이 없을 때 적용할 시간 (HH:MM, 30분 단위, 08:00~20:00)
         default_floor: 행에 층이 없을 때 적용할 층 (12 또는 18). 생략 시 CF_DEFAULT_FLOOR
         default_purpose: 행에 목적이 없을 때 적용할 방문 목적. 생략 시 meeting
+        participation: 참석 형태 필터 (예: 오프라인). 지정하면 참석 형태 컬럼 값에 이 문자열이 포함된 행만 등록하고, 컬럼이 없으면 등록하지 않고 중단
         dry_run: true면 사이트 검증까지만 수행하고 예약을 제출하지 않습니다
     """
     if err := _config_error():
@@ -467,7 +545,8 @@ async def register_visitors_from_text(
         return "입력 텍스트가 비어있습니다. 헤더행과 데이터를 포함해주세요."
     records = _parse_csv_text(text, delimiter=_detect_delimiter(text))
     return await _register_records(
-        records, _defaults(default_visit_date, default_visit_time, default_floor, default_purpose), dry_run, _EMPTY_TEXT_MSG
+        records, _defaults(default_visit_date, default_visit_time, default_floor, default_purpose), dry_run, _EMPTY_TEXT_MSG,
+        participation,
     )
 
 
@@ -479,6 +558,7 @@ async def preview_visitors_from_file(
     default_visit_time: str = "",
     default_floor: str = "",
     default_purpose: str = "",
+    participation: str = "",
 ) -> str:
     """Preview parsed visitor data from a file without registering.
 
@@ -488,14 +568,14 @@ async def preview_visitors_from_file(
         default_visit_time: 행에 방문시간이 없을 때 적용할 시간 (HH:MM, 30분 단위, 08:00~20:00)
         default_floor: 행에 층이 없을 때 적용할 층 (12 또는 18). 생략 시 CF_DEFAULT_FLOOR
         default_purpose: 행에 목적이 없을 때 적용할 방문 목적. 생략 시 meeting
+        participation: 참석 형태 필터 (예: 오프라인). 참석 형태 컬럼('어떤 형태로 참석하시나요?' 등) 값에 이 문자열이 포함된 행만 처리
     """
     records, err = _read_file_records(file_path)
     if err:
         return err
     if not records:
         return _EMPTY_FILE_MSG
-    visitors, errors = _build_visitors(records, _defaults(default_visit_date, default_visit_time, default_floor, default_purpose))
-    return _preview_text(visitors, errors)
+    return _preview_records(records, _defaults(default_visit_date, default_visit_time, default_floor, default_purpose), participation)
 
 
 async def register_visitors_from_file(
@@ -504,6 +584,7 @@ async def register_visitors_from_file(
     default_visit_time: str = "",
     default_floor: str = "",
     default_purpose: str = "",
+    participation: str = "",
     dry_run: bool = False,
 ) -> str:
     """Register multiple visitors from an Excel (.xlsx) or CSV/TSV file.
@@ -516,6 +597,7 @@ async def register_visitors_from_file(
         default_visit_time: 행에 방문시간이 없을 때 적용할 시간 (HH:MM, 30분 단위, 08:00~20:00)
         default_floor: 행에 층이 없을 때 적용할 층 (12 또는 18). 생략 시 CF_DEFAULT_FLOOR
         default_purpose: 행에 목적이 없을 때 적용할 방문 목적. 생략 시 meeting
+        participation: 참석 형태 필터 (예: 오프라인). 지정하면 참석 형태 컬럼 값에 이 문자열이 포함된 행만 등록하고, 컬럼이 없으면 등록하지 않고 중단
         dry_run: true면 사이트 검증까지만 수행하고 예약을 제출하지 않습니다
     """
     if err := _config_error():
@@ -524,7 +606,8 @@ async def register_visitors_from_file(
     if err:
         return err
     return await _register_records(
-        records, _defaults(default_visit_date, default_visit_time, default_floor, default_purpose), dry_run, _EMPTY_FILE_MSG
+        records, _defaults(default_visit_date, default_visit_time, default_floor, default_purpose), dry_run, _EMPTY_FILE_MSG,
+        participation,
     )
 
 

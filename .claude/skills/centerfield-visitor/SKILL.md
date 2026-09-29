@@ -20,7 +20,7 @@ MCP 서버 `centerfield-visitor`가 세션·CSRF·입주사·승인 담당자·�
 | 도구 | 용도 | 부작용 |
 |---|---|---|
 | `validate_configuration()` | 입주사·담당자·층 목록을 실제 사이트에 조회 | 없음 |
-| `preview_visitors_from_text(text, default_visit_date, default_visit_time, default_floor, default_purpose)` | 붙여넣은 CSV/TSV 파싱·검증 결과 | 없음 |
+| `preview_visitors_from_text(text, default_visit_date, default_visit_time, default_floor, default_purpose, participation)` | 붙여넣은 CSV/TSV 파싱·검증 결과 | 없음 |
 | `preview_visitors_from_file(file_path, ...)` | 파일(.xlsx/.csv/.tsv) 파싱·검증 결과. **로컬(stdio) 서버에서만 존재** | 없음 |
 | `register_visitor(..., dry_run=false)` | 1명 등록 | **예약 생성** |
 | `register_visitors_from_text(text, ..., dry_run=false)` | 명단 등록 | **예약 생성** |
@@ -45,7 +45,7 @@ MCP 서버 `centerfield-visitor`가 세션·CSRF·입주사·승인 담당자·�
 ## 절차
 
 1. **입력 정리.** 파일 경로(절대경로)나 텍스트를 받는다. 참석 신청 설문 export처럼 **방문일·방문시간 컬럼이 없는 명단**이면 사용자에게 행사 일시·층을 확인하고 `default_visit_date` / `default_visit_time` / `default_floor` 인자로 넘긴다(행마다 채우지 않아도 됨). 헤더는 한/영·설문 헤더(`Full Name`, `연락처(…)`, `소속/회사 (…)`) 모두 자동 인식된다.
-2. **필터.** 설문 명단이면 오프라인(현장) 참석자만 남기고 주최자·내부 직원 행은 제외한다. 상대 표현("다음 주 화요일")은 실제 날짜로 바꿔 확인한다.
+2. **필터.** 설문 명단이면 `participation="오프라인"` 인자로 오프라인(현장) 참석자만 남긴다(0.2.1+; 참석 형태 컬럼이 없으면 등록 도구가 중단하므로 그때는 사용자에게 확인). 주최자·내부 직원 행은 여전히 사람이 골라 제외한다. 상대 표현("다음 주 화요일")은 실제 날짜로 바꿔 확인한다.
 3. **preview.** `preview_visitors_from_text` / `preview_visitors_from_file`로 파싱 결과를 받아 표로 보여준다. 오류 행(휴대폰 누락 등)은 **사용자에게 값을 요청**하거나 제외 여부를 묻는다. 중복 행은 서버가 자동으로 건너뛴다.
 4. **확인.** "N명을 M월 D일 HH:MM, F층으로 등록합니다" 를 사용자가 승인하기 전에는 `register_*`를 호출하지 않는다. 처음 쓰는 환경이면 `validate_configuration` 또는 `dry_run=true`로 먼저 확인한다.
 5. **등록.** `register_visitors_from_text`(또는 `_from_file`, 1명이면 `register_visitor`). 반환 요약 "총 N명 중 X명 성공, Y명 실패"와 실패 상세를 그대로 보고한다. 부분 실패는 해당 행만 교정해 재호출한다.
