@@ -131,7 +131,23 @@ def main() -> int:
             assert "파싱 결과: 1명 유효, 0건 오류" in content, content
             assert "01012345678" in content and "18층" in content, content
 
-        print(f"OK streamable-http on {url}: tools={names}")
+            # DNS-rebinding protection: a loopback bind ships with a localhost allow-list, so a
+            # request carrying a rebound (non-local) Host header must be refused, not served.
+            rebound = client.post(
+                url,
+                json={"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {}},
+                headers={
+                    "Host": f"evil.example:{port}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    "MCP-Protocol-Version": PROTOCOL_VERSION,
+                    **({"Mcp-Session-Id": session} if session else {}),
+                },
+                timeout=30,
+            )
+            assert rebound.status_code == 421, ("rebound Host was not refused", rebound.status_code, rebound.text[:200])
+
+        print(f"OK streamable-http on {url}: tools={names}; rebound Host refused (421)")
         return 0
     finally:
         proc.terminate()

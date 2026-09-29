@@ -88,7 +88,7 @@ Lists without date/time columns: pass `default_visit_date="2026-11-15"`, `defaul
 | `CF_TRANSPORT` | `stdio` or `streamable-http` | `stdio` | |
 | `CF_HTTP_HOST` / `CF_HTTP_PORT` / `CF_HTTP_PATH` | HTTP bind address and path | `127.0.0.1` / `8000` / `/mcp` | |
 | `CF_HTTP_STATELESS` / `CF_HTTP_JSON_RESPONSE` | Streamable HTTP mode | `true` / `true` | |
-| `CF_HTTP_ALLOWED_HOSTS` | Host allow-list for DNS-rebinding protection (empty = off) | _(empty)_ | |
+| `CF_HTTP_ALLOWED_HOSTS` | Host allow-list for DNS-rebinding protection (`host:*` = any port). Empty: loopback binds use a built-in localhost list; other binds run with protection off and log a warning | _(empty)_ | |
 | `CF_EXPOSE_FILE_TOOLS` | Force file tools on/off | on for stdio, off for HTTP | |
 | `CF_CENTERFIELD_BASE_URL` | Centerfield base URL | `https://www.centerfield.co.kr` | |
 | `CF_REQUEST_TIMEOUT` | HTTP timeout (seconds) | `30` | |
