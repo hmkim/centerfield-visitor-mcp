@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "centerfield-visitor": {
+      "command": "uvx",
+      "args": ["centerfield-visitor-mcp"],
+      "env": {
+        "CF_ENV_FILE": "/absolute/path/to/.env"
+      },
+      "autoApprove": ["validate_configuration", "preview_visitors_from_text", "preview_visitors_from_file"],
+      "disabled": false
+    }
+  }
+}

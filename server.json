@@ -1,0 +1,46 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.hmkim/centerfield-visitor-mcp",
+  "description": "Visitor pre-registration for the Centerfield building (Seoul): validate, preview and register visitors from text or files.",
+  "repository": {
+    "url": "https://github.com/hmkim/centerfield-visitor-mcp",
+    "source": "github"
+  },
+  "version": "0.2.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "centerfield-visitor-mcp",
+      "version": "0.2.0",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "CF_ENV_FILE",
+          "description": "Absolute path to a .env holding CF_COMPANY_NAME and CF_PERSON_IN_CHARGE_MOBILE (optional if ~/.config/centerfield-visitor-mcp/.env exists)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CF_COMPANY_NAME",
+          "description": "Tenant company name exactly as registered in Centerfield",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CF_PERSON_IN_CHARGE_MOBILE",
+          "description": "Mobile number of the approval contact registered in Centerfield",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "CF_DEFAULT_FLOOR",
+          "description": "Floor used when a row omits it (12 or 18)",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "12"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+Full Name,Email,연락처(오프라인 참석신청시 당일 연락 가능 번호),어떤 형태로 참석하시나요?,소속/회사 (없으시면 '개인'으로 입력)
+홍길동,hong@example.com,010-1234-5678,오프라인,ABC주식회사
+김영희,kim@example.com,,오프라인,개인
+박온라인,park@example.com,,온라인,XYZ

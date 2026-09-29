@@ -1,0 +1,10 @@
+# ~/.codex/config.toml
+[mcp_servers.centerfield-visitor]
+command = "uvx"
+args = ["centerfield-visitor-mcp"]
+env = { CF_ENV_FILE = "/absolute/path/to/.env" }
+
+# remote (streamable HTTP)
+# [mcp_servers.centerfield-visitor-remote]
+# url = "https://<endpoint>/mcp"
+# bearer_token_env_var = "CF_MCP_TOKEN"
