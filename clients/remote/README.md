@@ -46,9 +46,10 @@ Time budget: one live reservation submit measured about 4–5 s (n=1, 2026-09-29
 Verify on first setup: Cognito accepts the RFC 8707 `resource` parameter Quick sends to the token endpoint
 (Entra ID is known to reject it); the runtime works without custom headers (Quick cannot send any).
 
-Why not ECS + public ALB on an internal (Isengard) account: VPC Block Public Access blocks internet-facing
-load balancers without an exception + AppSec review, and a private ALB would need a Quick VPC connection with
-Route 53 Resolver inbound endpoints.
+Why not ECS + a public ALB: AgentCore Runtime already provides the HTTPS endpoint and JWT authorization, so
+an internet-facing load balancer adds surface without adding value (and accounts with VPC Block Public Access
+enabled cannot create one); a private ALB would need a Quick VPC connection with Route 53 Resolver inbound
+endpoints.
 
 ## Other remote-capable clients
 
