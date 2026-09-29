@@ -6,13 +6,13 @@
     "url": "https://github.com/hmkim/centerfield-visitor-mcp",
     "source": "github"
   },
-  "version": "0.2.0",
+  "version": "0.2.1",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "centerfield-visitor-mcp",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {
