@@ -2,12 +2,13 @@
   "mcpServers": {
     "centerfield-visitor": {
       "command": "uvx",
-      "args": ["centerfield-visitor-mcp"],
+      "args": [
+        "--from",
+        "/absolute/path/to/centerfield-visitor-mcp",
+        "centerfield-visitor-mcp"
+      ],
       "env": {
-        "CF_COMPANY_NAME": "Your Company Name",
-        "CF_PERSON_IN_CHARGE_MOBILE": "010XXXXXXXX",
-        "CF_BUILDING": "east",
-        "CF_BUILDING_KEY": "East"
+        "CF_ENV_FILE": "/absolute/path/to/centerfield-visitor-mcp/.env"
       }
     }
   }

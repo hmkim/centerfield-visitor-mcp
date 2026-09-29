@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "centerfield-visitor-remote": {
+      "url": "https://<your-remote-endpoint>/mcp",
+      "headers": { "Authorization": "Bearer <token>" },
+      "autoApprove": ["validate_configuration", "preview_visitors_from_text"]
+    }
+  }
+}
