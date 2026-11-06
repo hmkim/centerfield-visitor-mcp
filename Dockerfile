@@ -1,6 +1,6 @@
-# Remote deployment image (streamable HTTP on 0.0.0.0:8000/mcp).
+# Remote deployment image (streamable HTTP on the container network at 0.0.0.0:8000/mcp).
 # Build:  docker build --platform linux/arm64 -t centerfield-visitor-mcp .
-# Run:    docker run --rm -p 8000:8000 -e CF_COMPANY_NAME=... -e CF_PERSON_IN_CHARGE_MOBILE=... centerfield-visitor-mcp
+# Local run: docker run --rm -p 127.0.0.1:8000:8000 --env-file /absolute/path/to/.env centerfield-visitor-mcp
 FROM python:3.12-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

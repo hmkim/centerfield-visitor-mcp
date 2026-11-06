@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     # Default floor applied when a visitor record/tool call omits `floor` ("12" or "18").
     default_floor: str = "12"
     request_timeout: int = 30
-    bulk_max_visitors: int = 200
+    bulk_max_visitors: int = 20
     request_delay: float = 0.5
 
     # ── Transport ─────────────────────────────────────────────────────────
@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     # File-path tools (register/preview *_from_file) only make sense when the agent and
     # the server share a filesystem. Default: on for stdio, off for streamable-http.
     expose_file_tools: bool | None = None
+
+    # Reservation-creating tools (register_*). When false they are not registered at all, so a
+    # preview-only deployment cannot create reservations whatever the client sends. Local
+    # installs keep the default (true); a remote deployment chooses per stack/endpoint.
+    expose_write_tools: bool = True
 
     # ── Convenience helpers ───────────────────────────────────────────────
     @property
@@ -124,6 +129,7 @@ class Settings(BaseSettings):
             "default_floor": self.default_floor,
             "transport": self.transport,
             "file_tools": "on" if self.file_tools_enabled else "off",
+            "write_tools": "on" if self.expose_write_tools else "off",
             "env_files": ", ".join(self.loaded_env_files()) or "(none)",
         }
 
@@ -135,6 +141,20 @@ def _mask_mobile(value: str) -> str:
     if len(digits) <= 4:
         return "*" * len(digits)
     return digits[:3] + "*" * (len(digits) - 5) + digits[-2:]
+
+
+mask_mobile = _mask_mobile
+
+
+def mask_email(value: str) -> str:
+    """``hong@example.com`` -> ``h***@example.com``; the domain stays readable for checking."""
+    text = (value or "").strip()
+    if not text:
+        return "(unset)"
+    local, sep, domain = text.rpartition("@")
+    if not sep or not local:
+        return "*" * len(text)
+    return local[0] + "***@" + domain
 
 
 settings = Settings()

@@ -9,11 +9,34 @@ from .exceptions import (
     CompanyNotFoundError,
     FloorListError,
     PersonInChargeVerificationError,
+    ReservationOutcomeUnknownError,
     ReservationSubmissionError,
     SessionInitError,
 )
 
 logger = logging.getLogger(__name__)
+
+# Transport errors raised before any request byte can have reached the site.
+_NOT_SENT_ERRORS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+    httpx.UnsupportedProtocol,
+    httpx.LocalProtocolError,
+)
+
+
+def _success_value(value) -> bool | None:
+    """True / False for an explicit site verdict, None when the value is not recognisable."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return {1: True, 0: False}.get(value)
+    if isinstance(value, str):
+        return {"true": True, "1": True, "y": True, "false": False, "0": False, "n": False}.get(
+            value.strip().lower()
+        )
+    return None
 
 
 class CenterfieldClient:
@@ -103,7 +126,7 @@ class CenterfieldClient:
                 return company_id
 
         raise CompanyNotFoundError(
-            f"Could not extract company_id from HTML. Response: {html[:500]}"
+            f"Could not extract company_id from the company search response ({len(html)} chars)"
         )
 
     async def verify_person_in_charge(self, mobile: str, company_id: str) -> dict:
@@ -170,30 +193,67 @@ class CenterfieldClient:
         return floors
 
     async def submit_reservation(self, payload: dict) -> dict:
+        """Submit one reservation.
+
+        Returns the site's JSON object when it answered ``success: true``.
+        Raises ReservationSubmissionError when the reservation was definitely not created
+        (connection never established, unambiguous 4xx, explicit ``success: false``) and
+        ReservationOutcomeUnknownError when the request may have been processed but the
+        outcome could not be confirmed (see that class). Messages never contain the
+        site's raw response body.
+        """
         url = f"{settings.centerfield_base_url}/reservation/ajaxVistorReservation"
         payload[self._csrf_field_name] = self._csrf_token
         payload["timezone_offset_minutes"] = "-540"
 
         try:
             resp = await self._client.post(url, data=payload)
-            resp.raise_for_status()
+        except _NOT_SENT_ERRORS as e:
+            raise ReservationSubmissionError(
+                f"Reservation not sent: {type(e).__name__} (connection was not established)"
+            ) from None
         except httpx.HTTPError as e:
-            raise ReservationSubmissionError(f"Reservation submission failed: {e}")
+            # Read/write timeouts, read/write errors, remote protocol errors, ...: the request
+            # may already have been processed by the site.
+            raise ReservationOutcomeUnknownError(
+                f"Reservation outcome unknown: {type(e).__name__} after the request was sent"
+            ) from None
+
+        status = resp.status_code
+        if status in (408, 429):
+            raise ReservationOutcomeUnknownError(
+                f"Reservation outcome unknown: HTTP {status} from the site", status_code=status
+            )
+        if 400 <= status < 500:
+            raise ReservationSubmissionError(f"Reservation rejected: HTTP {status}", status_code=status)
+        if not 200 <= status < 300:
+            raise ReservationOutcomeUnknownError(
+                f"Reservation outcome unknown: HTTP {status} from the site", status_code=status
+            )
 
         self._sync_csrf_from_cookie()
 
         try:
             result = resp.json()
         except ValueError:
-            raise ReservationSubmissionError(
-                f"Invalid JSON response: {resp.text[:300]}"
+            raise ReservationOutcomeUnknownError(
+                f"Reservation outcome unknown: response is not JSON ({len(resp.content)} bytes)",
+                status_code=status,
+            ) from None
+        if not isinstance(result, dict) or "success" not in result:
+            raise ReservationOutcomeUnknownError(
+                "Reservation outcome unknown: response has no 'success' field", status_code=status
             )
 
-        if not result.get("success"):
-            error_msg = result.get("error_message", result.get("message", "Unknown"))
-            raise ReservationSubmissionError(f"Reservation rejected: {error_msg}")
-
-        return result
+        verdict = _success_value(result["success"])
+        if verdict is True:
+            return result
+        if verdict is False:
+            error_msg = result.get("error_message") or result.get("message") or "Unknown"
+            raise ReservationSubmissionError(f"Reservation rejected: {error_msg}", status_code=status)
+        raise ReservationOutcomeUnknownError(
+            "Reservation outcome unknown: unrecognised 'success' value", status_code=status
+        )
 
     # ── Composite flows ─────────────────────────────────────────────────
 

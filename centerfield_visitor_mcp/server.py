@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import __version__
 from ._compat import MCP_MAJOR, create_server, run_server
-from .config import settings
+from .config import mask_email, mask_mobile, settings
 from .exceptions import CenterfieldError
 from .models import VisitorIn
 from .service import check_configuration, register_bulk, register_single
@@ -335,13 +335,17 @@ def _defaults(default_visit_date: str, default_visit_time: str, default_floor: s
     )
 
 
+_PREVIEW_MASK_NOTE = "(휴대폰·이메일은 마스킹 표시. 등록 도구에는 원문을 그대로 넘기세요)"
+
+
 def _preview_text(visitors: list[VisitorIn], errors: list[str], info: list[str] | None = None) -> str:
     lines = list(info or [])
-    lines.append(f"파싱 결과: {len(visitors)}명 유효, {len(errors)}건 오류\n")
+    lines.append(f"파싱 결과: {len(visitors)}명 유효, {len(errors)}건 오류")
+    lines.append(_PREVIEW_MASK_NOTE + "\n")
     for i, v in enumerate(visitors, 1):
         lines.append(
             f"  {i}. {v.visitor_name} | {v.visitor_company_name} | "
-            f"{v.visitor_mobile} | {v.visitor_email} | "
+            f"{mask_mobile(v.visitor_mobile)} | {mask_email(str(v.visitor_email))} | "
             f"{v.visit_date} {v.visit_time} | {v.visit_purpose} | {v.floor}층"
         )
     if errors:
@@ -350,16 +354,41 @@ def _preview_text(visitors: list[VisitorIn], errors: list[str], info: list[str] 
     return "\n".join(lines)
 
 
+UNKNOWN_WARNING = (
+    "⚠ 결과 불명(UNKNOWN) {n}건: 제출 후 응답을 확인하지 못했습니다. 예약이 이미 생성됐을 수 있으니 "
+    "자동 재시도하지 마세요. 센터필드 앱/사이트에서 예약 여부를 먼저 확인해야 합니다."
+)
+RETRY_GUIDANCE = "재시도는 명시적 실패(FAILED) 행만, 입력을 고친 뒤 새 preview와 사용자 승인을 거쳐 하세요."
+
+
 def _bulk_summary(result, errors: list[str], dry_run: bool, info: list[str] | None = None) -> str:
     head = "일괄 검증 결과 (dry run, 미제출)" if dry_run else "일괄 등록 결과"
-    summary = f"{head}: 총 {result.total}명 중 {result.succeeded}명 성공, {result.failed}명 실패"
+    summary = (
+        f"{head}: 총 {result.total}명 중 {result.succeeded}명 성공, {result.failed}명 실패, "
+        f"{result.unknown}명 결과 불명(UNKNOWN), {result.not_submitted}명 미제출(NOT_SUBMITTED)"
+    )
     if info:
         summary = "\n".join(info) + "\n" + summary
+    if result.unknown:
+        unknown_rows = [r for r in result.results if r.status == "UNKNOWN"]
+        if not any("자동 재시도" in r.message for r in unknown_rows):
+            summary += "\n" + UNKNOWN_WARNING.format(n=result.unknown)
+        if result.stopped_on_unknown:
+            summary += "\n결과 불명 행에서 일괄 처리를 중단했고, 이후 행은 제출하지 않았습니다(NOT_SUBMITTED)."
     if errors:
         summary += f"\n\n파싱 단계에서 건너뛴 행 ({len(errors)}건):\n" + "\n".join(errors)
-    if result.failed > 0:
-        failed_details = [f"  - {r.visitor_name}: {r.message}" for r in result.results if not r.success]
-        summary += "\n\n실패 상세:\n" + "\n".join(failed_details)
+
+    sections = (
+        ("UNKNOWN", "결과 불명 상세 (재시도 금지)"),
+        ("FAILED", "실패 상세 (FAILED)"),
+        ("NOT_SUBMITTED", "미제출 (NOT_SUBMITTED)"),
+    )
+    for status, title in sections:
+        rows = [r for r in result.results if r.status == status]
+        if rows:
+            summary += f"\n\n{title}:\n" + "\n".join(f"  - {r.visitor_name}: {r.message}" for r in rows)
+    if result.failed and not dry_run:
+        summary += "\n\n" + RETRY_GUIDANCE
     return summary
 
 
@@ -432,11 +461,11 @@ async def validate_configuration() -> str:
         f"  승인 담당자: {info['pic_name']} ({summary['person_in_charge_mobile']})\n"
         f"  빌딩: {summary['building']} / 기본 층: {summary['default_floor']}\n"
         f"  선택 가능한 층 키: {floors}\n"
-        f"  전송: {summary['transport']} / 파일 도구: {summary['file_tools']} / .env: {summary['env_files']}"
+        f"  전송: {summary['transport']} / 파일 도구: {summary['file_tools']} / "
+        f"등록 도구: {summary['write_tools']} / .env: {summary['env_files']}"
     )
 
 
-@mcp.tool(description="센터필드 빌딩 방문자 1명을 예약 등록합니다. dry_run=true면 사이트 검증까지만 하고 제출하지 않습니다. Keywords: 센터필드, 방문자 등록, 방문 예약, 방문 신청, visitor registration, centerfield reservation, register visitor, book visitor")
 async def register_visitor(
     visitor_name: str,
     visitor_company_name: str,
@@ -479,9 +508,16 @@ async def register_visitor(
 
     result = await register_single(visitor, dry_run=dry_run)
     label = "검증 완료 (dry run, 미제출)" if dry_run else "예약 완료"
-    if result.success:
+    if result.status == "SUCCEEDED":
         return f"{label}: {visitor.visitor_name} ({visitor.visit_date} {visitor.visit_time}, {visitor.floor}층)"
-    return f"예약 실패: {visitor.visitor_name} - {result.message}"
+    if result.status == "UNKNOWN":
+        output = f"결과 불명(UNKNOWN): {visitor.visitor_name} - {result.message}"
+        if "자동 재시도" not in result.message:
+            output += "\n" + UNKNOWN_WARNING.format(n=1)
+        return output
+    head = "검증 실패" if dry_run else "예약 실패"
+    tail = "" if dry_run else "\n" + RETRY_GUIDANCE
+    return f"{head}(FAILED): {visitor.visitor_name} - {result.message}{tail}"
 
 
 @mcp.tool(description="텍스트(복사/붙여넣기)로 방문자 목록을 입력받아 등록 없이 파싱·검증 결과만 보여줍니다. 등록 전에 먼저 호출하세요. Keywords: 센터필드, 방문자 미리보기, 명단 확인, preview visitors, 텍스트 확인, 등록 전 확인")
@@ -511,7 +547,6 @@ async def preview_visitors_from_text(
     return _preview_records(records, _defaults(default_visit_date, default_visit_time, default_floor, default_purpose), participation)
 
 
-@mcp.tool(description="텍스트(복사/붙여넣기)로 방문자 목록을 입력받아 일괄 등록합니다. 날짜/시간 컬럼이 없는 참석자 명단은 default_visit_date/default_visit_time을 함께 지정하세요. dry_run=true면 제출하지 않습니다. Keywords: 센터필드, 방문자 등록, 텍스트 입력, 복사 붙여넣기, paste visitors, text registration, 일괄 등록, 방문자 목록")
 async def register_visitors_from_text(
     text: str,
     default_visit_date: str = "",
@@ -611,9 +646,24 @@ async def register_visitors_from_file(
     )
 
 
+# ── Conditional registration ──────────────────────────────────────────────
+# Write tools (reservation-creating) are registered only when CF_EXPOSE_WRITE_TOOLS is true,
+# so a preview-only deployment does not even list them. File tools need a shared filesystem.
+
+WRITE_TOOL_NAMES = ("register_visitor", "register_visitors_from_text", "register_visitors_from_file")
+_WRITE_RESULT_NOTE = (
+    " 결과 status: SUCCEEDED(센터필드 success=true 응답) / FAILED(명시적 실패) / "
+    "UNKNOWN(결과 불명, 재시도 금지) / NOT_SUBMITTED(미제출)."
+)
+
+if settings.expose_write_tools:
+    mcp.tool(description="센터필드 빌딩 방문자 1명을 예약 등록합니다. dry_run=true면 사이트 검증까지만 하고 제출하지 않습니다." + _WRITE_RESULT_NOTE + " Keywords: 센터필드, 방문자 등록, 방문 예약, 방문 신청, visitor registration, centerfield reservation, register visitor, book visitor")(register_visitor)
+    mcp.tool(description="텍스트(복사/붙여넣기)로 방문자 목록을 입력받아 일괄 등록합니다. 날짜/시간 컬럼이 없는 참석자 명단은 default_visit_date/default_visit_time을 함께 지정하세요. dry_run=true면 제출하지 않습니다. 첫 결과 불명 행에서 중단합니다." + _WRITE_RESULT_NOTE + " Keywords: 센터필드, 방문자 등록, 텍스트 입력, 복사 붙여넣기, paste visitors, text registration, 일괄 등록, 방문자 목록")(register_visitors_from_text)
+
 if settings.file_tools_enabled:
     mcp.tool(description="파일(.xlsx/.csv/.tsv)의 방문자 목록을 미리 확인합니다 (실제 등록하지 않음). Keywords: 센터필드, 방문자 미리보기, 파일 확인, preview visitors, 명단 확인, 등록 전 확인")(preview_visitors_from_file)
-    mcp.tool(description="Excel/CSV/TSV 파일에서 방문자 목록을 읽어 일괄 등록합니다. 날짜/시간 컬럼이 없으면 default_visit_date/default_visit_time 지정. dry_run=true면 미제출. Keywords: 센터필드, 방문자 일괄 등록, 대량 등록, bulk registration, 엑셀 등록, CSV 등록, 파일로 등록, batch visitor, 방문자 명단")(register_visitors_from_file)
+    if settings.expose_write_tools:
+        mcp.tool(description="Excel/CSV/TSV 파일에서 방문자 목록을 읽어 일괄 등록합니다. 날짜/시간 컬럼이 없으면 default_visit_date/default_visit_time 지정. dry_run=true면 미제출. 첫 결과 불명 행에서 중단합니다." + _WRITE_RESULT_NOTE + " Keywords: 센터필드, 방문자 일괄 등록, 대량 등록, bulk registration, 엑셀 등록, CSV 등록, 파일로 등록, batch visitor, 방문자 명단")(register_visitors_from_file)
 
 
 def main():
@@ -629,6 +679,7 @@ def main():
         logger.info("Serving streamable HTTP on %s:%s%s (file tools %s)",
                     settings.http_host, settings.http_port, settings.http_path,
                     "on" if settings.file_tools_enabled else "off")
+    logger.info("Write tools (register_*): %s", "on" if settings.expose_write_tools else "off (preview-only)")
     run_server(mcp, settings)
 
 

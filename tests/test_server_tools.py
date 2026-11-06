@@ -228,7 +228,9 @@ async def test_preview_file_csv_and_xlsx(write_csv, write_xlsx):
     csv_path = write_csv("v.csv", KO_HEADER + f"\n홍길동,ABC,01012345678,hong@example.com,{future()},10:00,12\n")
     assert "파싱 결과: 1명 유효, 0건 오류" in await server.preview_visitors_from_file(csv_path)
     xlsx_path = write_xlsx("v.xlsx", [["이름", "회사", "전화번호", "이메일", "방문일", "방문시간"], ["홍길동", "ABC", 1012345678, "hong@example.com", future(), "10:00"]])
-    assert "01012345678" in await server.preview_visitors_from_file(xlsx_path)
+    out = await server.preview_visitors_from_file(xlsx_path)
+    # the leading 0 Excel dropped is restored (visible in the masked prefix) and the number is masked
+    assert "010******78" in out and "01012345678" not in out
 
 
 async def test_preview_file_errors(tmp_path):
@@ -302,3 +304,172 @@ async def test_live_register_visitor_if_allowed(monkeypatch):
         floor=os.environ.get("CF_TEST_FLOOR", ""),
     )
     assert out.startswith("예약 완료"), out
+
+
+# ── preview masking (server side) ─────────────────────────────────────────
+
+async def test_preview_masks_mobile_and_email():
+    text = KO_HEADER + f"\n홍길동,ABC,010-1234-5678,hong.gildong@example.com,{future()},10:00,12\n"
+    out = await server.preview_visitors_from_text(text)
+    assert "010******78" in out and "h***@example.com" in out
+    for raw in ("01012345678", "010-1234-5678", "hong.gildong@"):
+        assert raw not in out
+    assert "마스킹" in out and "홍길동" in out
+
+
+async def test_preview_errors_do_not_echo_raw_values():
+    text = KO_HEADER + f"\n홍길동,ABC,0212345678,not-an-email,{future()},10:00,12\n"
+    out = await server.preview_visitors_from_text(text)
+    assert "0212345678" not in out and "not-an-email" not in out
+    assert "visitor_mobile" in out and "visitor_email" in out
+
+
+async def test_register_still_receives_raw_values(fake_bulk):
+    text = KO_HEADER + f"\n홍길동,ABC,010-1234-5678,hong@example.com,{future()},10:00,12\n"
+    await server.register_visitors_from_text(text)
+    v = fake_bulk[-1]["visitors"][0]
+    assert (v.visitor_mobile, v.visitor_email) == ("01012345678", "hong@example.com")
+
+
+# ── outcome reporting (UNKNOWN / NOT_SUBMITTED) ───────────────────────────
+
+def _res(name: str, status: str, message: str = "") -> ReservationResult:
+    return ReservationResult(visitor_name=name, visitor_mobile="01000000000", success=status == "SUCCEEDED",
+                             status=status, message=message or status.lower())
+
+
+@pytest.fixture
+def scripted_bulk(monkeypatch):
+    def _install(statuses: list[str]):
+        async def _fake(visitors, *, dry_run=False):
+            results = [_res(v.visitor_name, s) for v, s in zip(visitors, statuses)]
+            count = lambda s: sum(1 for r in results if r.status == s)  # noqa: E731
+            return BulkReservationOut(
+                total=len(visitors), succeeded=count("SUCCEEDED"), failed=count("FAILED"),
+                unknown=count("UNKNOWN"), not_submitted=count("NOT_SUBMITTED"),
+                stopped_on_unknown="UNKNOWN" in statuses, results=results,
+            )
+
+        monkeypatch.setattr(server, "register_bulk", _fake)
+
+    return _install
+
+
+def _three_rows() -> str:
+    return KO_HEADER + "".join(
+        f"\nv{i},ABC,0101111{i:04d},v{i}@example.com,{future()},10:00,12" for i in range(3)
+    ) + "\n"
+
+
+async def test_bulk_summary_reports_unknown_and_forbids_retry(scripted_bulk):
+    scripted_bulk(["SUCCEEDED", "UNKNOWN", "NOT_SUBMITTED"])
+    out = await server.register_visitors_from_text(_three_rows())
+    assert out.startswith("일괄 등록 결과: 총 3명 중 1명 성공, 0명 실패, 1명 결과 불명(UNKNOWN), 1명 미제출(NOT_SUBMITTED)")
+    assert "자동 재시도하지 마세요" in out and "일괄 처리를 중단" in out
+    assert "결과 불명 상세 (재시도 금지):\n  - v1" in out and "미제출 (NOT_SUBMITTED):\n  - v2" in out
+    assert "실패 상세" not in out
+
+
+async def test_bulk_summary_failed_rows_get_retry_guidance(scripted_bulk):
+    scripted_bulk(["SUCCEEDED", "FAILED", "SUCCEEDED"])
+    out = await server.register_visitors_from_text(_three_rows())
+    assert "1명 실패, 0명 결과 불명(UNKNOWN), 0명 미제출(NOT_SUBMITTED)" in out
+    assert "실패 상세 (FAILED):\n  - v1" in out and "새 preview와 사용자 승인" in out
+    assert "자동 재시도하지 마세요" not in out
+
+
+async def test_bulk_summary_clean_run_has_no_warnings(fake_bulk):
+    out = await server.register_visitors_from_text(_three_rows())
+    assert "3명 성공, 0명 실패, 0명 결과 불명" in out
+    assert "⚠" not in out and "재시도" not in out
+
+
+@pytest.fixture
+def scripted_single(monkeypatch):
+    def _install(status: str, message: str = "msg"):
+        async def _fake(visitor, *, dry_run=False):
+            return _res(visitor.visitor_name, status, message)
+
+        monkeypatch.setattr(server, "register_single", _fake)
+
+    return _install
+
+
+async def test_register_visitor_unknown_output(scripted_single):
+    scripted_single("UNKNOWN", "Reservation outcome unknown: ReadTimeout after the request was sent")
+    out = await server.register_visitor("홍길동", "ABC", "01012345678", "hong@example.com", future(), "10:00")
+    assert out.startswith("결과 불명(UNKNOWN): 홍길동") and "자동 재시도하지 마세요" in out
+    assert "예약 완료" not in out and "예약 실패" not in out
+
+
+async def test_register_visitor_unknown_output_does_not_duplicate_guidance(scripted_single):
+    scripted_single("UNKNOWN", "Reservation outcome unknown — 자동 재시도하지 마세요.")
+    out = await server.register_visitor("홍길동", "ABC", "01012345678", "hong@example.com", future(), "10:00")
+    assert out.count("자동 재시도하지 마세요") == 1
+
+
+async def test_register_visitor_failed_output(scripted_single):
+    scripted_single("FAILED", "Reservation rejected: 중복")
+    out = await server.register_visitor("홍길동", "ABC", "01012345678", "hong@example.com", future(), "10:00")
+    assert out.startswith("예약 실패(FAILED): 홍길동 - Reservation rejected: 중복") and "새 preview" in out
+
+
+async def test_register_visitor_rejects_already_passed_slot(fake_single, monkeypatch):
+    import datetime as dt
+
+    from centerfield_visitor_mcp import models
+
+    monkeypatch.setattr(models, "clock", lambda: dt.datetime(2026, 11, 6, 15, 7, tzinfo=models.SITE_TZ))
+    out = await server.register_visitor("홍길동", "ABC", "01012345678", "hong@example.com", "2026-11-06", "15:00")
+    assert out.startswith("입력값 오류:") and "already passed (Asia/Seoul)" in out and fake_single == []
+
+
+# ── CF_EXPOSE_WRITE_TOOLS ─────────────────────────────────────────────────
+
+def _tool_names_in_subprocess(tmp_path, **env_overrides) -> set[str]:
+    import json
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CF_")}
+    env.update({"HOME": str(tmp_path), **env_overrides})
+    code = (
+        "import asyncio, json;"
+        "from centerfield_visitor_mcp import server;"
+        "print(json.dumps(sorted(t.name for t in asyncio.run(server.mcp.list_tools()))))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], env=env, cwd=str(tmp_path),
+                         capture_output=True, text=True, check=True)
+    return set(json.loads(out.stdout.strip().splitlines()[-1]))
+
+
+READ_TOOLS = {"validate_configuration", "preview_visitors_from_text"}
+
+
+def test_write_tools_registered_by_default(tmp_path):
+    names = _tool_names_in_subprocess(tmp_path)
+    assert set(server.WRITE_TOOL_NAMES) | READ_TOOLS | {"preview_visitors_from_file"} == names
+
+
+@pytest.mark.parametrize("value", ["false", "0", "no"])
+def test_write_tools_absent_when_disabled_stdio(tmp_path, value):
+    names = _tool_names_in_subprocess(tmp_path, CF_EXPOSE_WRITE_TOOLS=value)
+    assert names == READ_TOOLS | {"preview_visitors_from_file"}
+    assert not names & set(server.WRITE_TOOL_NAMES)
+
+
+def test_write_tools_absent_when_disabled_remote(tmp_path):
+    names = _tool_names_in_subprocess(tmp_path, CF_TRANSPORT="streamable-http", CF_EXPOSE_WRITE_TOOLS="false")
+    assert names == READ_TOOLS
+
+
+def test_remote_default_keeps_write_tools_without_file_tools(tmp_path):
+    names = _tool_names_in_subprocess(tmp_path, CF_TRANSPORT="streamable-http")
+    assert names == READ_TOOLS | {"register_visitor", "register_visitors_from_text"}
+
+
+def test_write_tool_descriptions_mention_statuses():
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    for name in ("register_visitor", "register_visitors_from_text"):
+        desc = tools[name].description
+        assert "UNKNOWN" in desc and "재시도 금지" in desc and "success=true" in desc

@@ -132,7 +132,8 @@ def main() -> int:
             )
             content = call["result"]["content"][0]["text"]
             assert "파싱 결과: 1명 유효, 0건 오류" in content, content
-            assert "01012345678" in content and "18층" in content, content
+            assert "010******78" in content and "h***@example.com" in content and "18층" in content, content
+            assert "01012345678" not in content and "hong@example.com" not in content, content
 
             # DNS-rebinding protection: a loopback bind ships with a localhost allow-list, so a
             # request carrying a rebound (non-local) Host header must be refused, not served.

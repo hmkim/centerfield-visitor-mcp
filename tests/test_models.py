@@ -3,6 +3,7 @@ import datetime as dt
 import pytest
 from pydantic import ValidationError
 
+from centerfield_visitor_mcp import models
 from centerfield_visitor_mcp.models import VisitorIn, normalize_mobile
 
 
@@ -79,15 +80,70 @@ def test_date_format_rejected(visitor_kwargs, raw):
         VisitorIn(**{**visitor_kwargs, "visit_date": raw})
 
 
-def test_past_date_rejected(visitor_kwargs):
-    yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+def _pin(monkeypatch, when: dt.datetime) -> None:
+    monkeypatch.setattr(models, "clock", lambda: when)
+
+
+SEOUL = models.SITE_TZ
+UTC = dt.timezone.utc
+
+
+def test_past_date_rejected(visitor_kwargs, monkeypatch):
+    _pin(monkeypatch, dt.datetime(2026, 11, 6, 9, 0, tzinfo=SEOUL))
     with pytest.raises(ValidationError) as exc:
-        VisitorIn(**{**visitor_kwargs, "visit_date": yesterday})
+        VisitorIn(**{**visitor_kwargs, "visit_date": "2026-11-05"})
     assert "in the past" in str(exc.value)
 
 
-def test_today_accepted(visitor_kwargs):
-    assert VisitorIn(**{**visitor_kwargs, "visit_date": dt.date.today().isoformat()}).visit_date == dt.date.today()
+def test_today_later_time_accepted(visitor_kwargs, monkeypatch):
+    _pin(monkeypatch, dt.datetime(2026, 11, 6, 9, 59, tzinfo=SEOUL))
+    v = VisitorIn(**{**visitor_kwargs, "visit_date": "2026-11-06", "visit_time": "10:00"})
+    assert v.visit_date == dt.date(2026, 11, 6)
+
+
+def test_today_exact_start_accepted(visitor_kwargs, monkeypatch):
+    _pin(monkeypatch, dt.datetime(2026, 11, 6, 10, 0, 0, tzinfo=SEOUL))
+    assert VisitorIn(**{**visitor_kwargs, "visit_date": "2026-11-06", "visit_time": "10:00"}).visit_time == "10:00"
+
+
+@pytest.mark.parametrize("now", [dt.datetime(2026, 11, 6, 10, 0, 1), dt.datetime(2026, 11, 6, 15, 7)])
+def test_today_time_already_passed_rejected(visitor_kwargs, monkeypatch, now):
+    _pin(monkeypatch, now.replace(tzinfo=SEOUL))
+    with pytest.raises(ValidationError) as exc:
+        VisitorIn(**{**visitor_kwargs, "visit_date": "2026-11-06", "visit_time": "10:00"})
+    assert "already passed (Asia/Seoul)" in str(exc.value)
+
+
+def test_utc_host_late_evening_uses_seoul_date(visitor_kwargs, monkeypatch):
+    """At 2026-11-05 16:00 UTC it is already 2026-11-06 01:00 in Seoul: the 5th is in the past."""
+    _pin(monkeypatch, dt.datetime(2026, 11, 5, 16, 0, tzinfo=UTC))
+    with pytest.raises(ValidationError) as exc:
+        VisitorIn(**{**visitor_kwargs, "visit_date": "2026-11-05", "visit_time": "20:00"})
+    assert "in the past (Asia/Seoul)" in str(exc.value)
+    assert VisitorIn(**{**visitor_kwargs, "visit_date": "2026-11-06", "visit_time": "08:00"})
+
+
+def test_us_host_morning_uses_seoul_time(visitor_kwargs, monkeypatch):
+    """09:00 in US Pacific (UTC-8) on Nov 5 is 02:00 Nov 6 in Seoul; a Nov 5 visit has passed."""
+    pacific = dt.timezone(dt.timedelta(hours=-8))
+    _pin(monkeypatch, dt.datetime(2026, 11, 5, 9, 0, tzinfo=pacific))
+    with pytest.raises(ValidationError):
+        VisitorIn(**{**visitor_kwargs, "visit_date": "2026-11-05", "visit_time": "18:00"})
+
+
+def test_ahead_host_does_not_reject_seoul_today(visitor_kwargs, monkeypatch):
+    """A host in UTC+14 already on Nov 7 must not reject a Seoul Nov 6 afternoon visit."""
+    kiritimati = dt.timezone(dt.timedelta(hours=14))
+    _pin(monkeypatch, dt.datetime(2026, 11, 7, 0, 0, tzinfo=kiritimati))  # = 2026-11-06 19:00 Seoul
+    assert VisitorIn(**{**visitor_kwargs, "visit_date": "2026-11-06", "visit_time": "20:00"}).visit_time == "20:00"
+    with pytest.raises(ValidationError):
+        VisitorIn(**{**visitor_kwargs, "visit_date": "2026-11-06", "visit_time": "18:30"})
+
+
+def test_site_now_is_seoul_and_default_clock_is_aware():
+    now = models.site_now()
+    assert now.tzinfo is not None and now.utcoffset() == dt.timedelta(hours=9)
+    assert models.clock is models._system_clock
 
 
 @pytest.mark.parametrize("field", ["visitor_name", "visitor_company_name"])

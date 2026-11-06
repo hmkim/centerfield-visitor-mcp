@@ -16,7 +16,9 @@ SURVEY_HEADERS = [
 
 
 def future(days: int = 14) -> str:
-    return (dt.date.today() + dt.timedelta(days=days)).isoformat()
+    from centerfield_visitor_mcp.models import site_now
+
+    return (site_now().date() + dt.timedelta(days=days)).isoformat()
 
 
 @pytest.fixture(autouse=True)

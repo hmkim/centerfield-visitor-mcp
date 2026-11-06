@@ -10,6 +10,7 @@ from centerfield_visitor_mcp.exceptions import (
     CompanyNotFoundError,
     FloorListError,
     PersonInChargeVerificationError,
+    ReservationOutcomeUnknownError,
     ReservationSubmissionError,
     SessionInitError,
 )
@@ -185,16 +186,115 @@ async def test_submit_reservation_payload_and_success():
     assert "timezone_offset_minutes=-540" in body and "csrf_centerfield_name=tok" in body
 
 
+SUBMIT_URL = f"{BASE}/reservation/ajaxVistorReservation"
+
+
 @respx.mock
 @pytest.mark.parametrize(
     "response",
-    [httpx.Response(200, json={"success": False, "error_message": "중복 예약"}), httpx.Response(200, text="<html>"), httpx.Response(502)],
+    [
+        httpx.Response(200, json={"success": False, "error_message": "중복 예약"}),
+        httpx.Response(200, json={"success": "false", "message": "거절"}),
+        httpx.Response(200, json={"success": 0}),
+        httpx.Response(400),
+        httpx.Response(403, text="<html>forbidden</html>"),
+        httpx.Response(404),
+    ],
 )
-async def test_submit_reservation_failures(response):
-    respx.post(f"{BASE}/reservation/ajaxVistorReservation").mock(return_value=response)
+async def test_submit_reservation_definite_failures(response):
+    """Explicit reject and unambiguous 4xx: the reservation was not created -> FAILED class."""
+    respx.post(SUBMIT_URL).mock(return_value=response)
     async with CenterfieldClient() as c:
-        with pytest.raises(ReservationSubmissionError):
+        with pytest.raises(ReservationSubmissionError) as exc:
             await c.submit_reservation({})
+    assert not isinstance(exc.value, ReservationOutcomeUnknownError)
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "error",
+    [httpx.ConnectError("refused"), httpx.ConnectTimeout("connect timed out"), httpx.PoolTimeout("pool")],
+)
+async def test_submit_reservation_not_sent_is_failure(error):
+    respx.post(SUBMIT_URL).mock(side_effect=error)
+    async with CenterfieldClient() as c:
+        with pytest.raises(ReservationSubmissionError, match="not sent"):
+            await c.submit_reservation({})
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "error",
+    [
+        httpx.ReadTimeout("read timed out"),
+        httpx.WriteTimeout("write timed out"),
+        httpx.ReadError("connection reset"),
+        httpx.WriteError("broken pipe"),
+        httpx.RemoteProtocolError("server disconnected without sending a response"),
+    ],
+)
+async def test_submit_reservation_transport_errors_after_send_are_unknown(error):
+    respx.post(SUBMIT_URL).mock(side_effect=error)
+    async with CenterfieldClient() as c:
+        with pytest.raises(ReservationOutcomeUnknownError) as exc:
+            await c.submit_reservation({})
+    assert type(error).__name__ in str(exc.value)
+    assert not isinstance(exc.value, ReservationSubmissionError)
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(408),
+        httpx.Response(429),
+        httpx.Response(500),
+        httpx.Response(502, text="<html>bad gateway</html>"),
+        httpx.Response(503),
+        httpx.Response(504),
+        httpx.Response(200, text="<html>login page</html>"),
+        httpx.Response(200, text=""),
+        httpx.Response(200, json=["unexpected"]),
+        httpx.Response(200, json={"result": "ok"}),
+        httpx.Response(200, json={"success": None}),
+        httpx.Response(200, json={"success": "maybe"}),
+    ],
+)
+async def test_submit_reservation_unconfirmed_responses_are_unknown(response):
+    respx.post(SUBMIT_URL).mock(return_value=response)
+    async with CenterfieldClient() as c:
+        with pytest.raises(ReservationOutcomeUnknownError):
+            await c.submit_reservation({})
+
+
+@respx.mock
+@pytest.mark.parametrize("value", [True, "true", 1, "Y"])
+async def test_submit_reservation_success_values(value):
+    respx.post(SUBMIT_URL).mock(return_value=httpx.Response(200, json={"success": value}))
+    async with CenterfieldClient() as c:
+        assert (await c.submit_reservation({}))["success"] == value
+
+
+@respx.mock
+async def test_submit_reservation_unknown_message_omits_response_body():
+    body = "<html>SECRET-BODY 010-9999-8888 someone@example.com</html>"
+    respx.post(SUBMIT_URL).mock(return_value=httpx.Response(200, text=body))
+    async with CenterfieldClient() as c:
+        with pytest.raises(ReservationOutcomeUnknownError) as exc:
+            await c.submit_reservation({})
+    msg = str(exc.value)
+    assert "SECRET-BODY" not in msg and "010-9999-8888" not in msg and f"{len(body.encode())} bytes" in msg
+
+
+@respx.mock
+async def test_search_company_error_omits_response_body():
+    respx.post(f"{BASE}/ajax/getCompanyList").mock(
+        return_value=httpx.Response(200, text="<ul><li>SECRET-BODY no id</li></ul>")
+    )
+    async with CenterfieldClient() as c:
+        with pytest.raises(CompanyNotFoundError) as exc:
+            await c.search_company("x")
+    assert "SECRET-BODY" not in str(exc.value)
 
 
 # ── prepare / build_payload ───────────────────────────────────────────────
@@ -290,3 +390,127 @@ async def test_check_configuration_returns_context():
     mock_happy_path(respx)
     info = await service.check_configuration()
     assert info == {"company_id": "4242", "pic_name": "담당자", "floors": {"lower_floor12": "12층", "upper_floor18": "18층"}}
+
+
+# ── outcome classification in the service layer (UNKNOWN / NOT_SUBMITTED) ─
+
+def _visitors(visitor_kwargs, n: int) -> list[VisitorIn]:
+    return [
+        VisitorIn(**{**visitor_kwargs, "visitor_name": f"v{i}", "visitor_mobile": f"0101111{i:04d}"}) for i in range(n)
+    ]
+
+
+def _assert_partition(out):
+    assert out.succeeded + out.failed + out.unknown + out.not_submitted == out.total == len(out.results)
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "side_effect",
+    [httpx.ReadTimeout("t"), httpx.RemoteProtocolError("p"), httpx.Response(503), httpx.Response(200, text="<html>")],
+)
+async def test_register_single_unknown_outcome(visitor, side_effect):
+    submit = mock_happy_path(respx)
+    submit.side_effect = [side_effect]
+    res = await service.register_single(visitor)
+    assert res.status == "UNKNOWN" and res.success is False
+    assert "재시도 금지" in res.message and submit.call_count == 1
+
+
+@respx.mock
+@pytest.mark.parametrize("response", [httpx.Response(400), httpx.Response(200, json={"success": False, "error_message": "중복"})])
+async def test_register_single_definite_failure(visitor, response):
+    submit = mock_happy_path(respx)
+    submit.side_effect = [response]
+    res = await service.register_single(visitor)
+    assert res.status == "FAILED" and res.success is False and "재시도 금지" not in res.message
+
+
+@respx.mock
+async def test_register_single_success_status(visitor):
+    mock_happy_path(respx)
+    res = await service.register_single(visitor)
+    assert res.status == "SUCCEEDED" and res.success is True
+
+
+@respx.mock
+async def test_register_bulk_stops_at_first_unknown(visitor_kwargs):
+    submit = mock_happy_path(respx)
+    submit.side_effect = [
+        httpx.Response(200, json={"success": True}),
+        httpx.ReadTimeout("read timed out"),
+        httpx.Response(200, json={"success": True}),
+        httpx.Response(200, json={"success": True}),
+    ]
+    out = await service.register_bulk(_visitors(visitor_kwargs, 4))
+    assert submit.call_count == 2  # rows after the UNKNOWN are never sent
+    assert [r.status for r in out.results] == ["SUCCEEDED", "UNKNOWN", "NOT_SUBMITTED", "NOT_SUBMITTED"]
+    assert [r.visitor_name for r in out.results] == ["v0", "v1", "v2", "v3"]
+    assert (out.succeeded, out.failed, out.unknown, out.not_submitted) == (1, 0, 1, 2)
+    assert out.stopped_on_unknown is True
+    assert [r.success for r in out.results] == [True, False, False, False]
+    _assert_partition(out)
+
+
+@respx.mock
+async def test_register_bulk_5xx_on_first_row_submits_nothing_else(visitor_kwargs):
+    submit = mock_happy_path(respx)
+    submit.side_effect = [httpx.Response(502), httpx.Response(200, json={"success": True})]
+    out = await service.register_bulk(_visitors(visitor_kwargs, 3))
+    assert submit.call_count == 1
+    assert (out.unknown, out.not_submitted, out.succeeded) == (1, 2, 0)
+    _assert_partition(out)
+
+
+@respx.mock
+async def test_register_bulk_failure_does_not_stop_but_unknown_does(visitor_kwargs):
+    submit = mock_happy_path(respx)
+    submit.side_effect = [
+        httpx.Response(200, json={"success": False, "error_message": "중복"}),
+        httpx.Response(404),
+        httpx.Response(200, json={"success": True}),
+        httpx.Response(500),
+        httpx.Response(200, json={"success": True}),
+    ]
+    out = await service.register_bulk(_visitors(visitor_kwargs, 5))
+    assert [r.status for r in out.results] == ["FAILED", "FAILED", "SUCCEEDED", "UNKNOWN", "NOT_SUBMITTED"]
+    assert (out.succeeded, out.failed, out.unknown, out.not_submitted) == (1, 2, 1, 1)
+    assert submit.call_count == 4
+    _assert_partition(out)
+
+
+@respx.mock
+async def test_register_bulk_without_unknown_reports_zero_counts(visitor_kwargs):
+    mock_happy_path(respx)
+    out = await service.register_bulk(_visitors(visitor_kwargs, 2))
+    assert (out.succeeded, out.unknown, out.not_submitted, out.stopped_on_unknown) == (2, 0, 0, False)
+
+
+@respx.mock
+async def test_service_logs_contain_no_pii_or_site_text(visitor_kwargs, caplog):
+    submit = mock_happy_path(respx)
+    submit.side_effect = [
+        httpx.Response(200, json={"success": False, "error_message": "SITE-TEXT 홍길동 01099998888"}),
+        httpx.Response(503, text="SITE-BODY"),
+    ]
+    visitors = _visitors(visitor_kwargs, 2)
+    mobiles = tuple(v.visitor_mobile for v in visitors)
+    with caplog.at_level("DEBUG"):
+        out = await service.register_bulk(visitors)
+    assert [r.status for r in out.results] == ["FAILED", "UNKNOWN"]
+    assert "SITE-TEXT" in out.results[0].message  # the tool output keeps the site's reason
+    logged = caplog.text
+    for secret in ("SITE-TEXT", "SITE-BODY", "01099998888", *mobiles, "hong@example.com", "v0", "v1"):
+        assert secret not in logged
+    assert "ReservationSubmissionError" in logged and "ReservationOutcomeUnknownError (HTTP 503)" in logged
+
+
+def test_reservation_result_status_backward_compatible():
+    from centerfield_visitor_mcp.models import ReservationResult
+
+    assert ReservationResult(visitor_name="a", visitor_mobile="m", success=True, message="").status == "SUCCEEDED"
+    assert ReservationResult(visitor_name="a", visitor_mobile="m", success=False, message="").status == "FAILED"
+    r = ReservationResult(visitor_name="a", visitor_mobile="m", success=False, status="UNKNOWN", message="")
+    assert r.model_dump()["status"] == "UNKNOWN" and r.model_dump()["success"] is False
+    with pytest.raises(ValueError):
+        ReservationResult(visitor_name="a", visitor_mobile="m", success=True, status="UNKNOWN", message="")
