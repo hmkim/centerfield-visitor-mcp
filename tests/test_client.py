@@ -179,9 +179,11 @@ def test_resolve_floor_key_does_not_guess():
 @respx.mock
 async def test_submit_reservation_payload_and_success():
     route = respx.post(f"{BASE}/reservation/ajaxVistorReservation").mock(return_value=httpx.Response(200, json={"success": True}))
+    payload = {"visitor_name": "홍길동"}
     async with CenterfieldClient() as c:
         c._csrf_token = "tok"
-        assert await c.submit_reservation({"visitor_name": "홍길동"}) == {"success": True}
+        assert await c.submit_reservation(payload) == {"success": True}
+    assert payload == {"visitor_name": "홍길동"}
     body = route.calls.last.request.content.decode()
     assert "timezone_offset_minutes=-540" in body and "csrf_centerfield_name=tok" in body
 

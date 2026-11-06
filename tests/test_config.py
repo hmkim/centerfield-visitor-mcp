@@ -71,6 +71,7 @@ def test_mask_email_edge_cases():
 def test_mask_mobile_edge_cases():
     assert _mask_mobile("") == "(unset)"
     assert _mask_mobile("123") == "***"
+    assert _mask_mobile("12345") == "*****"
     assert _mask_mobile("01012345678") == "010******78"
 
 

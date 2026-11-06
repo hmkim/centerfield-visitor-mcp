@@ -138,7 +138,7 @@ def _mask_mobile(value: str) -> str:
     digits = value.strip()
     if not digits:
         return "(unset)"
-    if len(digits) <= 4:
+    if len(digits) <= 5:
         return "*" * len(digits)
     return digits[:3] + "*" * (len(digits) - 5) + digits[-2:]
 

@@ -202,6 +202,7 @@ class CenterfieldClient:
         outcome could not be confirmed (see that class). Messages never contain the
         site's raw response body.
         """
+        payload = dict(payload)
         url = f"{settings.centerfield_base_url}/reservation/ajaxVistorReservation"
         payload[self._csrf_field_name] = self._csrf_token
         payload["timezone_offset_minutes"] = "-540"
