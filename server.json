@@ -42,6 +42,13 @@
           "isRequired": false,
           "isSecret": false,
           "default": "12"
+        },
+        {
+          "name": "CF_EXPOSE_WRITE_TOOLS",
+          "description": "Set false for a preview-only server that does not register reservation-creating tools",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "true"
         }
       ]
     }

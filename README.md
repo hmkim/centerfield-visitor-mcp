@@ -69,8 +69,8 @@ and is `true` only for `SUCCEEDED`):
 | Status | Meaning | What to do |
 |---|---|---|
 | `SUCCEEDED` | Centerfield answered `success: true` (dry run: validated, nothing submitted). No reservation id is returned by the site | done |
-| `FAILED` | Definitely not created: explicit `success: false`, HTTP 4xx, validation/setup error, or the connection was never established | fix the cause, run a new preview, get approval, retry that row only |
-| `UNKNOWN` | The request may have been processed but the outcome is unconfirmed: read/write timeout, read/write error, remote protocol error, HTTP 5xx, non-JSON or unrecognised response | **do not retry**; check the Centerfield app/site first |
+| `FAILED` | Definitely not created: explicit `success: false`, HTTP 4xx except 408/429, validation/setup error, or the connection was never established | fix the cause, run a new preview, get approval, retry that row only |
+| `UNKNOWN` | The request may have been processed but the outcome is unconfirmed: HTTP 408/429/5xx, read/write timeout, read/write error, remote protocol error, non-JSON or unrecognised response | **do not retry**; check the Centerfield app/site first |
 | `NOT_SUBMITTED` | Not sent because an earlier row in the same bulk call was `UNKNOWN` | resolve the `UNKNOWN` row, then preview + approve again |
 
 Bulk calls stop at the first `UNKNOWN`. The summary always reads

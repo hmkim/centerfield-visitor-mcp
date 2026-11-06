@@ -22,7 +22,7 @@ that when the HTTPS front in front of it validates `Host`/`Origin` itself.
 
 ## Amazon Quick (Connectors → Model Context Protocol)
 
-Facts from the Quick user guide (checked 2026-09): remote servers only (stdio not supported), Streamable HTTP
+Facts from the [Amazon Quick MCP integration guide](https://docs.aws.amazon.com/quick/latest/userguide/mcp-integration.html) (checked 2026-11): remote servers only (stdio not supported), Streamable HTTP
 preferred, OAuth user (3LO) / service (2LO client credentials) / no-auth, **no custom HTTP headers**,
 **5-minute per-operation timeout** (HTTP 424 after the limit), tool `inputSchema` must be JSON Schema Draft 7+
 (this server passes: `required` is an array at the schema root), custom connectors need a manual **Sync**
