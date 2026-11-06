@@ -50,19 +50,45 @@ also shipped as the project skill `.claude/skills/centerfield-visitor/SKILL.md`.
 | `preview_visitors_from_file(file_path, defaults…, participation)` | none | stdio deployments only (needs a shared filesystem) |
 | `register_visitors_from_file(file_path, defaults…, participation, dry_run)` | **creates reservations** | stdio deployments only |
 
+`register_*` tools exist only while `CF_EXPOSE_WRITE_TOOLS` is true (default).
+
 Recommended flow: `validate_configuration` once → `preview_*` → human confirms → `register_*`.
 The `default_*` arguments fill columns that attendee lists usually lack (visit date/time/floor).
 `participation` keeps only rows whose attendance-type column contains the given text (see below).
+Previews mask mobile numbers and emails (`010******78`, `h***@example.com`); pass the original
+values to `register_*`.
+
+With `CF_EXPOSE_WRITE_TOOLS=false` the three `register_*` tools are not registered at all, so the
+server is preview-only regardless of what a client sends.
+
+## Reservation outcomes
+
+Every visitor gets one `status` (`ReservationResult.status`; `success` is kept for compatibility
+and is `true` only for `SUCCEEDED`):
+
+| Status | Meaning | What to do |
+|---|---|---|
+| `SUCCEEDED` | Centerfield answered `success: true` (dry run: validated, nothing submitted). No reservation id is returned by the site | done |
+| `FAILED` | Definitely not created: explicit `success: false`, HTTP 4xx except 408/429, validation/setup error, or the connection was never established | fix the cause, run a new preview, get approval, retry that row only |
+| `UNKNOWN` | The request may have been processed but the outcome is unconfirmed: HTTP 408/429/5xx, read/write timeout, read/write error, remote protocol error, non-JSON or unrecognised response | **do not retry**; check the Centerfield app/site first |
+| `NOT_SUBMITTED` | Not sent because an earlier row in the same bulk call was `UNKNOWN` | resolve the `UNKNOWN` row, then preview + approve again |
+
+Bulk calls stop at the first `UNKNOWN`. The summary always reads
+`총 N명 중 A명 성공, B명 실패, C명 결과 불명(UNKNOWN), D명 미제출(NOT_SUBMITTED)`;
+`BulkReservationOut` carries `succeeded`, `failed`, `unknown`, `not_submitted` (they add up to `total`)
+and `stopped_on_unknown`. `failed` now counts only definite failures (it used to be `total - succeeded`).
+
+Logs record only the error class and HTTP status, never the site's response text or visitor data.
 
 ## Input constraints
 
 | Field | Rule |
 |-------|------|
 | `visit_time` | `HH:MM`, 30-minute intervals, `08:00`–`20:00` (`HH:MM:SS` from spreadsheets tolerated) |
-| `visit_date` | `YYYY-MM-DD`, today or later |
+| `visit_date` | `YYYY-MM-DD`, today or later in **Asia/Seoul**, whatever the host time zone; date + time already passed in Seoul is rejected |
 | `floor` | `12` or `18`; if omitted, `CF_DEFAULT_FLOOR` (default `12`) |
 | `visit_purpose` | `meeting` (default), `visit_business`, `interview`, `tour`, `construction`, `others` |
-| `visitor_mobile` | Korean mobile; `010-1234-5678`, `010 1234 5678`, `+82 10-1234-5678` are normalized to `01012345678`; empty or non-mobile values are rejected |
+| `visitor_mobile` | Korean mobile only (a site requirement); `010-1234-5678`, `010 1234 5678`, `+82 10-1234-5678` are normalized to `01012345678`; empty or non-Korean numbers are rejected. Visitors without a Korean mobile need Centerfield's manual process |
 | `visitor_email` | valid email address |
 | duplicates | rows with the same mobile + date + time inside one request are skipped and reported |
 
@@ -97,9 +123,10 @@ with an empty value are dropped and counted). If a filter is requested but the i
 | `CF_HTTP_STATELESS` / `CF_HTTP_JSON_RESPONSE` | Streamable HTTP mode | `true` / `true` | |
 | `CF_HTTP_ALLOWED_HOSTS` | Host allow-list for DNS-rebinding protection (`host:*` = any port). Empty: loopback binds use a built-in localhost list; other binds run with protection off and log a warning | _(empty)_ | |
 | `CF_EXPOSE_FILE_TOOLS` | Force file tools on/off | on for stdio, off for HTTP | |
+| `CF_EXPOSE_WRITE_TOOLS` | Register the reservation-creating `register_*` tools. `false` = preview-only server (tools absent from the tool list). Remote deployments should set it explicitly per endpoint | `true` | |
 | `CF_CENTERFIELD_BASE_URL` | Centerfield base URL | `https://www.centerfield.co.kr` | |
 | `CF_REQUEST_TIMEOUT` | HTTP timeout (seconds) | `30` | |
-| `CF_BULK_MAX_VISITORS` | Max visitors per bulk request (use `10` for Amazon Quick's 60 s limit) | `200` | |
+| `CF_BULK_MAX_VISITORS` | Max visitors per bulk request (default `20`; use `10` as a conservative Amazon Quick cap) | `20` | |
 | `CF_REQUEST_DELAY` | Delay between submissions (seconds) | `0.5` | |
 | `CF_ENV_FILE` | Extra `.env` to load | _(unset)_ | |
 
@@ -137,7 +164,20 @@ The last command creates one real reservation; confirm it in the Centerfield mob
 
 The server holds a single session against the Centerfield site, manages CSRF tokens, verifies the tenant company
 and approval contact, resolves the floor key, then submits the reservation form. Bulk requests are processed
-sequentially with a configurable delay.
+sequentially with a configurable delay and stop at the first `UNKNOWN` outcome.
+
+## Known limitations
+
+- **No server-enforced preview → approval → write binding.** The server does not issue a preview token that
+  `register_*` must present, so "a human approved exactly this list" is enforced by the agent skill and the
+  client's tool-approval prompt, not by the server. A token scheme was deliberately left out until a stateless
+  design is settled (the HTTP transport is stateless, so the token must be verifiable without server-side
+  storage, bound to the exact normalized input, short-lived, and replay-safe). Until then, keep per-call
+  approval on for `register_*` in your client (do not "always allow"), and use `CF_EXPOSE_WRITE_TOOLS=false`
+  for endpoints that should only preview.
+- **No reservation id.** The site's success response carries no identifier the server can return; `SUCCEEDED`
+  means "the site answered `success: true`". Check the Centerfield app for the booking itself.
+- **No cancel API.** Cancel wrong bookings in the Centerfield app/site.
 
 ## MCP Registry
 

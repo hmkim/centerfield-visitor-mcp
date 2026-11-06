@@ -1,12 +1,16 @@
 # Remote deployment (streamable HTTP) — Amazon Quick and other remote MCP clients
 
-The same package serves MCP over HTTP:
+The same package serves MCP over HTTP. Local checks must bind only to loopback:
 
 ```bash
-# .env: CF_TRANSPORT=streamable-http, CF_HTTP_HOST=0.0.0.0, CF_HTTP_PORT=8000
+# .env: CF_TRANSPORT=streamable-http, CF_HTTP_HOST=127.0.0.1, CF_HTTP_PORT=8000
 uvx centerfield-visitor-mcp
-# container: docker build --platform linux/arm64 -t centerfield-visitor-mcp . && docker run -p 8000:8000 --env-file .env centerfield-visitor-mcp
+# container: bind the host side to loopback; the container itself listens on its private network
+# docker build --platform linux/arm64 -t centerfield-visitor-mcp .
+docker run --rm --publish 127.0.0.1:8000:8000 --env-file /absolute/path/to/.env centerfield-visitor-mcp
 ```
+
+A managed runtime or authenticated reverse proxy may require the container to listen on `0.0.0.0`; do not publish that container port directly to all host interfaces.
 
 Endpoint: `http://<host>:8000/mcp` (stateless, JSON responses). File-path tools are hidden in this mode;
 agents paste the list as text (`*_from_text`). Smoke test: `uv run python scripts/smoke_http.py`.
@@ -18,9 +22,9 @@ that when the HTTPS front in front of it validates `Host`/`Origin` itself.
 
 ## Amazon Quick (Connectors → Model Context Protocol)
 
-Facts from the Quick user guide (checked 2026-09): remote servers only (stdio not supported), Streamable HTTP
+Facts from the [Amazon Quick MCP integration guide](https://docs.aws.amazon.com/quick/latest/userguide/mcp-integration.html) (checked 2026-11): remote servers only (stdio not supported), Streamable HTTP
 preferred, OAuth user (3LO) / service (2LO client credentials) / no-auth, **no custom HTTP headers**,
-**60-second per-operation timeout (HTTP 424, no retry)**, tool `inputSchema` must be JSON Schema Draft 7+
+**5-minute per-operation timeout** (HTTP 424 after the limit), tool `inputSchema` must be JSON Schema Draft 7+
 (this server passes: `required` is an array at the schema root), custom connectors need a manual **Sync**
 after tool changes, Quick Enterprise subscription required.
 
@@ -29,7 +33,10 @@ with a Cognito user pool as the OAuth server.
 
 1. Push the image to ECR (arm64). Create an AgentCore Runtime with protocol `MCP`, environment
    `CF_COMPANY_NAME`, `CF_PERSON_IN_CHARGE_MOBILE` (inject from Secrets Manager), `CF_DEFAULT_FLOOR`,
-   `CF_BULK_MAX_VISITORS=10`.
+   `CF_BULK_MAX_VISITORS=10`, and `CF_EXPOSE_WRITE_TOOLS` set explicitly.
+   To separate preview from write access, run two runtimes from the same image: a preview-only one with
+   `CF_EXPOSE_WRITE_TOOLS=false` (no `register_*` tools are registered) shared broadly, and a write one with
+   `CF_EXPOSE_WRITE_TOOLS=true`, its own app client/scope, shared only with the people allowed to book.
 2. Cognito: user pool + domain + resource server (scope e.g. `centerfield/visitor.write`) + **M2M app client**
    (client credentials). Configure the runtime's JWT authorizer with the pool's OIDC discovery URL and
    `allowedClients=[<app client id>]`.

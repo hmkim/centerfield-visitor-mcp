@@ -32,6 +32,12 @@ def test_file_tools_follow_transport(monkeypatch):
     assert settings.file_tools_enabled is True
 
 
+def test_operational_defaults(monkeypatch):
+    monkeypatch.delenv("CF_BULK_MAX_VISITORS", raising=False)
+    assert Settings(_env_file=None).bulk_max_visitors == 20
+    assert Settings(_env_file=None).request_timeout == 30
+
+
 def test_allowed_hosts_parsing(monkeypatch):
     monkeypatch.setattr(settings, "http_allowed_hosts", " mcp.example.com, localhost:8000 ,")
     assert settings.allowed_hosts == ["mcp.example.com", "localhost:8000"]
@@ -44,9 +50,28 @@ def test_public_summary_masks_mobile(configured):
     assert summary["company_name"] == "Test Tenant Inc."
 
 
+def test_expose_write_tools_default_and_env(monkeypatch):
+    monkeypatch.delenv("CF_EXPOSE_WRITE_TOOLS", raising=False)
+    assert Settings(_env_file=None).expose_write_tools is True
+    monkeypatch.setenv("CF_EXPOSE_WRITE_TOOLS", "false")
+    s = Settings()
+    assert s.expose_write_tools is False and s.public_summary()["write_tools"] == "off"
+
+
+def test_mask_email_edge_cases():
+    from centerfield_visitor_mcp.config import mask_email
+
+    assert mask_email("hong@example.com") == "h***@example.com"
+    assert mask_email("a@b.co") == "a***@b.co"
+    assert mask_email("") == "(unset)"
+    assert mask_email("noatsign") == "********"
+    assert mask_email("@example.com") == "************"
+
+
 def test_mask_mobile_edge_cases():
     assert _mask_mobile("") == "(unset)"
     assert _mask_mobile("123") == "***"
+    assert _mask_mobile("12345") == "*****"
     assert _mask_mobile("01012345678") == "010******78"
 
 

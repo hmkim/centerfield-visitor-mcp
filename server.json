@@ -6,13 +6,13 @@
     "url": "https://github.com/hmkim/centerfield-visitor-mcp",
     "source": "github"
   },
-  "version": "0.2.1",
+  "version": "0.3.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "centerfield-visitor-mcp",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -42,6 +42,13 @@
           "isRequired": false,
           "isSecret": false,
           "default": "12"
+        },
+        {
+          "name": "CF_EXPOSE_WRITE_TOOLS",
+          "description": "Set false for a preview-only server that does not register reservation-creating tools",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "true"
         }
       ]
     }

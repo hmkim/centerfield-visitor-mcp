@@ -1,12 +1,35 @@
 from __future__ import annotations
 
 import re
-from datetime import date
-from typing import Literal
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Callable, Literal
 
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, field_validator, model_validator
 
 from .config import settings
+
+try:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    try:
+        SITE_TZ = ZoneInfo("Asia/Seoul")
+    except ZoneInfoNotFoundError:  # pragma: no cover - hosts without tz data (e.g. Windows w/o tzdata)
+        SITE_TZ = timezone(timedelta(hours=9), "Asia/Seoul")
+except ImportError:  # pragma: no cover
+    SITE_TZ = timezone(timedelta(hours=9), "Asia/Seoul")
+
+
+def _system_clock() -> datetime:
+    return datetime.now(SITE_TZ)
+
+
+# Test seam: replace with a callable returning an aware datetime to pin "now".
+clock: Callable[[], datetime] = _system_clock
+
+
+def site_now() -> datetime:
+    """Current time at the building (Asia/Seoul), independent of the host time zone."""
+    return clock().astimezone(SITE_TZ)
 
 VALID_PURPOSES = Literal[
     "visit_business", "meeting", "interview", "tour", "construction", "others"
@@ -65,8 +88,8 @@ class VisitorIn(BaseModel):
     @field_validator("visit_date")
     @classmethod
     def not_in_past(cls, v: date) -> date:
-        if v < date.today():
-            raise ValueError(f"visit_date {v.isoformat()} is in the past")
+        if v < site_now().date():
+            raise ValueError(f"visit_date {v.isoformat()} is in the past (Asia/Seoul)")
         return v
 
     @field_validator("visit_time")
@@ -89,19 +112,66 @@ class VisitorIn(BaseModel):
             raise ValueError("latest time is 20:00")
         return f"{hour:02d}:{minute:02d}"
 
+    @model_validator(mode="after")
+    def visit_not_already_started(self) -> "VisitorIn":
+        hour, minute = (int(x) for x in self.visit_time.split(":"))
+        start = datetime.combine(self.visit_date, time(hour, minute), tzinfo=SITE_TZ)
+        if start < site_now():
+            raise ValueError(
+                f"visit {self.visit_date.isoformat()} {self.visit_time} has already passed (Asia/Seoul)"
+            )
+        return self
+
     def dedupe_key(self) -> tuple[str, str, str]:
         return (self.visitor_mobile, self.visit_date.isoformat(), self.visit_time)
 
 
+ReservationStatus = Literal["SUCCEEDED", "FAILED", "UNKNOWN", "NOT_SUBMITTED"]
+
+
 class ReservationResult(BaseModel):
+    """Outcome of one visitor.
+
+    status:
+      SUCCEEDED      Centerfield answered ``success: true`` (dry run: validated, nothing submitted)
+      FAILED         definitely not created (explicit reject, 4xx, validation/setup error)
+      UNKNOWN        request may have been processed; outcome unconfirmed — never retry automatically
+      NOT_SUBMITTED  skipped because an earlier row in the same bulk call was UNKNOWN
+    ``success`` is kept for backward compatibility and is True only for SUCCEEDED.
+    """
+
     visitor_name: str
     visitor_mobile: str
     success: bool
     message: str
+    status: ReservationStatus = "SUCCEEDED"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_status(cls, data):
+        # Old callers pass only ``success``; derive the status from it.
+        if isinstance(data, dict) and "status" not in data and "success" in data:
+            data = {**data, "status": "SUCCEEDED" if data["success"] else "FAILED"}
+        return data
+
+    @model_validator(mode="after")
+    def _success_matches_status(self) -> "ReservationResult":
+        if self.success != (self.status == "SUCCEEDED"):
+            raise ValueError("success must be true exactly when status is SUCCEEDED")
+        return self
 
 
 class BulkReservationOut(BaseModel):
+    """``succeeded + failed + unknown + not_submitted == total``.
+
+    ``failed`` counts only definite failures (FAILED); it no longer includes UNKNOWN or
+    NOT_SUBMITTED rows (previously it was ``total - succeeded``).
+    """
+
     total: int
     succeeded: int
     failed: int
+    unknown: int = 0
+    not_submitted: int = 0
+    stopped_on_unknown: bool = False
     results: list[ReservationResult]
